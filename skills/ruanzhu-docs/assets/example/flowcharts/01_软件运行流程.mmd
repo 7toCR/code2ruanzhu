@@ -1,0 +1,41 @@
+---
+config:
+  theme: base
+  fontFamily: "Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif"
+  themeVariables:
+    fontSize: 14px
+    primaryColor: "#ffffff"
+    primaryTextColor: "#1a1a1a"
+    primaryBorderColor: "#333333"
+    lineColor: "#3a3a3a"
+    clusterBorder: "#9aa3ad"
+    edgeLabelBackground: "#ffffff"
+  flowchart:
+    useMaxWidth: false
+    curve: basis
+    nodeSpacing: 26
+    rankSpacing: 22
+    padding: 8
+---
+%% 图 01 软件运行流程（主要代码依据：main.c 的 main()）
+flowchart TB
+  A(["上电复位"]) --> B["时钟、GPIO、ADC、UART 初始化"]
+  B --> C["加载默认设定温度 40.0 ℃"]
+  C --> D["进入主循环"]
+  D --> E{"10 ms 节拍到？"}
+  E -->|"否"| D
+  E -->|"是"| F[["sensor_read()<br/>温度采集（见图 4-1）"]]
+  F --> G[["ctrl_task()<br/>温度控制（见图 4-2）"]]
+  G --> H[["uart_task()<br/>串口通信（见图 4-3）"]]
+  H --> D
+  classDef term fill:#e9edf2,stroke:#333,stroke-width:1.2px,color:#111
+  classDef proc fill:#ffffff,stroke:#333,stroke-width:1px,color:#111
+  classDef dec fill:#fffaf0,stroke:#333,stroke-width:1px,color:#111
+  classDef io fill:#eef4fb,stroke:#333,stroke-width:1px,color:#111
+  classDef sub fill:#f4f0fa,stroke:#333,stroke-width:1px,color:#111
+  classDef isr fill:#f4f0fa,stroke:#333,stroke-width:1.2px,color:#111
+  classDef join fill:#ffffff,stroke:#333,stroke-width:1px,color:#111,font-size:12px
+  class A term
+  class B,C,D proc
+  class E dec
+  class F,G,H sub

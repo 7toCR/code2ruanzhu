@@ -1,0 +1,4 @@
+interface:
+  display_name: "RuanZhu Docs"
+  short_description: "Prepare Chinese software copyright (软著) registration materials from source code"
+  default_prompt: "Use $ruanzhu-docs to turn my source code into 软著 registration materials: draw the flowcharts, write the detailed design document, generate the 60-page source-code document, draft the information card, and check everything for compliance."

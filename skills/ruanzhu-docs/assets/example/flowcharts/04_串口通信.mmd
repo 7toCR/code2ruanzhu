@@ -1,0 +1,45 @@
+---
+config:
+  theme: base
+  fontFamily: "Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif"
+  themeVariables:
+    fontSize: 14px
+    primaryColor: "#ffffff"
+    primaryTextColor: "#1a1a1a"
+    primaryBorderColor: "#333333"
+    lineColor: "#3a3a3a"
+    clusterBorder: "#9aa3ad"
+    edgeLabelBackground: "#ffffff"
+  flowchart:
+    useMaxWidth: false
+    curve: basis
+    nodeSpacing: 26
+    rankSpacing: 22
+    padding: 8
+---
+%% 图 04 串口通信（主要代码依据：app/uart_proto.c 的 uart_task()、proto_handle()）
+flowchart TB
+  A(["uart_task()"]) --> B{"接收缓冲有数据？"}
+  B -->|"否"| Z(["返回"])
+  B -->|"是"| C["逐字节送入拆帧状态机"]
+  C --> D{"收到完整帧且<br/>校验和正确？"}
+  D -->|"否"| B
+  D -->|"是"| E{"命令字"}
+  E -->|"0x01 读温度"| F["应答当前温度与故障标志"]
+  E -->|"0x02 设定温度"| G{"设定值在<br/>20.0~80.0 ℃？"}
+  G -->|"是"| H["更新设定温度并应答成功"]
+  G -->|"否"| I["应答参数错误"]
+  E -->|"其他"| I
+  F --> B
+  H --> B
+  I --> B
+  classDef term fill:#e9edf2,stroke:#333,stroke-width:1.2px,color:#111
+  classDef proc fill:#ffffff,stroke:#333,stroke-width:1px,color:#111
+  classDef dec fill:#fffaf0,stroke:#333,stroke-width:1px,color:#111
+  classDef io fill:#eef4fb,stroke:#333,stroke-width:1px,color:#111
+  classDef sub fill:#f4f0fa,stroke:#333,stroke-width:1px,color:#111
+  classDef isr fill:#f4f0fa,stroke:#333,stroke-width:1.2px,color:#111
+  classDef join fill:#ffffff,stroke:#333,stroke-width:1px,color:#111,font-size:12px
+  class A,Z term
+  class C,F,H,I proc
+  class B,D,E,G dec

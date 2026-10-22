@@ -1,0 +1,49 @@
+---
+config:
+  theme: base
+  fontFamily: "Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif"
+  themeVariables:
+    fontSize: 14px
+    primaryColor: "#ffffff"
+    primaryTextColor: "#1a1a1a"
+    primaryBorderColor: "#333333"
+    lineColor: "#3a3a3a"
+    clusterBorder: "#9aa3ad"
+    edgeLabelBackground: "#ffffff"
+  flowchart:
+    useMaxWidth: false
+    curve: basis
+    nodeSpacing: 26
+    rankSpacing: 22
+    padding: 12
+    subGraphTitleMargin:
+      top: 6
+      bottom: 6
+---
+%% 图 00 软件总体结构（主要代码依据：main.c、app/*.c、drv/*.c）
+flowchart TB
+  subgraph L1["上位机通信层"]
+    direction LR
+    U["串口命令收发<br/>uart_task()"]
+  end
+  subgraph L2["应用层"]
+    direction LR
+    P["命令解析与应答<br/>proto_handle()"] --> C["温度控制<br/>ctrl_task()"]
+  end
+  subgraph L3["驱动层"]
+    direction LR
+    S["温度采集<br/>sensor_read()"] ~~~ H["加热输出<br/>heater_set()"]
+  end
+  U -->|"命令"| P
+  U <-.->|"应答"| P
+  C <-->|"温度"| S
+  C -->|"占空比"| H
+  linkStyle 3,4 marker-end:none
+  classDef term fill:#e9edf2,stroke:#333,stroke-width:1.2px,color:#111
+  classDef proc fill:#ffffff,stroke:#333,stroke-width:1px,color:#111
+  classDef dec fill:#fffaf0,stroke:#333,stroke-width:1px,color:#111
+  classDef io fill:#eef4fb,stroke:#333,stroke-width:1px,color:#111
+  classDef sub fill:#f4f0fa,stroke:#333,stroke-width:1px,color:#111
+  classDef isr fill:#f4f0fa,stroke:#333,stroke-width:1.2px,color:#111
+  classDef join fill:#ffffff,stroke:#333,stroke-width:1px,color:#111,font-size:12px
+  class U,P,C,S,H proc

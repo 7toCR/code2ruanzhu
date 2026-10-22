@@ -1,0 +1,40 @@
+---
+config:
+  theme: base
+  fontFamily: "Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif"
+  themeVariables:
+    fontSize: 14px
+    primaryColor: "#ffffff"
+    primaryTextColor: "#1a1a1a"
+    primaryBorderColor: "#333333"
+    lineColor: "#3a3a3a"
+    clusterBorder: "#9aa3ad"
+    edgeLabelBackground: "#ffffff"
+  flowchart:
+    useMaxWidth: false
+    curve: basis
+    nodeSpacing: 26
+    rankSpacing: 22
+    padding: 8
+---
+%% 图 03 温度控制（主要代码依据：app/control.c 的 ctrl_task()）
+flowchart TB
+  A(["ctrl_task()"]) --> B{"传感器故障？"}
+  B -->|"是"| C["关闭加热输出"]
+  C --> Z(["返回"])
+  B -->|"否"| D{"温度 ≥ 上限 85.0 ℃？"}
+  D -->|"是"| C
+  D -->|"否"| E["计算偏差 e = 设定值 − 实测值"]
+  E --> F["PI 运算并限幅到 0~100 %"]
+  F --> G["heater_set() 输出 PWM 占空比"]
+  G --> Z
+  classDef term fill:#e9edf2,stroke:#333,stroke-width:1.2px,color:#111
+  classDef proc fill:#ffffff,stroke:#333,stroke-width:1px,color:#111
+  classDef dec fill:#fffaf0,stroke:#333,stroke-width:1px,color:#111
+  classDef io fill:#eef4fb,stroke:#333,stroke-width:1px,color:#111
+  classDef sub fill:#f4f0fa,stroke:#333,stroke-width:1px,color:#111
+  classDef isr fill:#f4f0fa,stroke:#333,stroke-width:1.2px,color:#111
+  classDef join fill:#ffffff,stroke:#333,stroke-width:1px,color:#111,font-size:12px
+  class A,Z term
+  class C,E,F,G proc
+  class B,D dec
