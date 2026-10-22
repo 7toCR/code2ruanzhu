@@ -1,0 +1,43 @@
+---
+config:
+  theme: base
+  fontFamily: "Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif"
+  themeVariables:
+    fontSize: 14px
+    primaryColor: "#ffffff"
+    primaryTextColor: "#1a1a1a"
+    primaryBorderColor: "#333333"
+    lineColor: "#3a3a3a"
+    clusterBorder: "#9aa3ad"
+    edgeLabelBackground: "#ffffff"
+  flowchart:
+    useMaxWidth: false
+    curve: basis
+    nodeSpacing: 26
+    rankSpacing: 22
+    padding: 8
+---
+%% 图 02 温度采集（主要代码依据：drv/sensor.c 的 sensor_read()）
+flowchart TB
+  A(["sensor_read()"]) --> B["启动 ADC 单次转换"]
+  B --> C{"转换完成？<br/>（超时 2 ms）"}
+  C -->|"否"| D["故障计数加 1"]
+  D --> E{"连续 3 次失败？"}
+  E -->|"是"| F["置传感器故障标志"]
+  E -->|"否"| Z(["返回上次温度"])
+  F --> Z
+  C -->|"是"| G["读取 12 位采样值"]
+  G --> H["查表换算为温度（0.1 ℃）"]
+  H --> I["8 点滑动平均滤波"]
+  I --> J["清故障计数"]
+  J --> Y(["返回滤波温度"])
+  classDef term fill:#e9edf2,stroke:#333,stroke-width:1.2px,color:#111
+  classDef proc fill:#ffffff,stroke:#333,stroke-width:1px,color:#111
+  classDef dec fill:#fffaf0,stroke:#333,stroke-width:1px,color:#111
+  classDef io fill:#eef4fb,stroke:#333,stroke-width:1px,color:#111
+  classDef sub fill:#f4f0fa,stroke:#333,stroke-width:1px,color:#111
+  classDef isr fill:#f4f0fa,stroke:#333,stroke-width:1.2px,color:#111
+  classDef join fill:#ffffff,stroke:#333,stroke-width:1px,color:#111,font-size:12px
+  class A,Z,Y term
+  class B,D,F,G,H,I,J proc
+  class C,E dec
