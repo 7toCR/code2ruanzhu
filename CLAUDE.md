@@ -33,11 +33,16 @@ python3 $S/build_docx.py --content content.py --out out/示例温控终端嵌入
 python3 $S/check_ruanzhu.py design out/示例温控终端嵌入式软件_详细设计说明书.docx --name 示例温控终端嵌入式软件 --version V1.0
 python3 $S/source_code_docx.py build src --name 示例温控终端嵌入式软件 --version V1.0 -o out/示例温控终端嵌入式软件_源代码.docx --pdf
 python3 $S/check_ruanzhu.py source out/示例温控终端嵌入式软件_源代码.docx --name 示例温控终端嵌入式软件 --version V1.0
+python3 $S/source_code_docx.py build src --name 示例温控终端嵌入式软件 --version V1.0 -o out/like_源代码.docx --like out/示例温控终端嵌入式软件_源代码.docx --sibling out/示例温控终端嵌入式软件_源代码.docx --pdf
+python3 $S/check_ruanzhu.py source out/like_源代码.docx --name 示例温控终端嵌入式软件 --version V1.0 --like out/示例温控终端嵌入式软件_源代码.docx
+python3 $S/docx_to_content.py out/示例温控终端嵌入式软件_详细设计说明书.docx --out content_rt.py --media-dir figs_rt
+python3 $S/build_docx.py --template out/示例温控终端嵌入式软件_详细设计说明书.docx --like out/示例温控终端嵌入式软件_详细设计说明书.docx --content content_rt.py --out out/重排.docx --auto-toc
+python3 $S/check_ruanzhu.py design out/重排.docx --name 示例温控终端嵌入式软件 --version V1.0 --like out/示例温控终端嵌入式软件_详细设计说明书.docx
 python3 $S/fill_info_card.py <repo>/skills/ruanzhu-docs/assets/template_info_card.docx info_card.json -o out/示例_信息采集卡.docx
 python3 $S/check_ruanzhu.py card info_card.json
 ```
 
-The example code is only 363 lines, so its design document is 9 pages; do not pass `--code-lines` in the smoke test (it would report P01 by design). The card check reports K02 because applicant fields are intentionally 【待填】.
+The example code is only 363 lines, so its design document is 9 pages; do not pass `--code-lines` in the smoke test (it would report P01 by design). The card check reports K02 because applicant fields are intentionally 【待填】. The `--like` / `--sibling` lines use the example's own outputs as the reference: S08 and R01 should be INFO, and the sibling report shows 100% overlap by design.
 
 Keep `skills/ruanzhu-docs/` and `.claude/skills/ruanzhu-docs/` identical (`diff -r`).
 

@@ -1,49 +1,42 @@
 ---
 config:
   theme: base
-  fontFamily: "Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif"
+  fontFamily: "Noto Sans CJK SC, Microsoft YaHei, PingFang SC, sans-serif"
   themeVariables:
     fontSize: 14px
     primaryColor: "#ffffff"
     primaryTextColor: "#1a1a1a"
     primaryBorderColor: "#333333"
     lineColor: "#3a3a3a"
-    clusterBorder: "#9aa3ad"
     edgeLabelBackground: "#ffffff"
   flowchart:
     useMaxWidth: false
     curve: basis
-    nodeSpacing: 26
-    rankSpacing: 22
+    nodeSpacing: 60
+    rankSpacing: 30
     padding: 12
-    subGraphTitleMargin:
-      top: 6
-      bottom: 6
+    wrappingWidth: 640
 ---
-%% 图 00 软件总体结构（主要代码依据：main.c、app/*.c、drv/*.c）
+%% 图 00 软件总体结构（主要代码依据：main.c、app/uart_proto.c、app/control.c、drv/sensor.c、drv/heater.c）
 flowchart TB
-  subgraph L1["上位机通信层"]
-    direction LR
-    U["串口命令收发<br/>uart_task()"]
-  end
-  subgraph L2["应用层"]
-    direction LR
-    P["命令解析与应答<br/>proto_handle()"] --> C["温度控制<br/>ctrl_task()"]
-  end
-  subgraph L3["驱动层"]
-    direction LR
-    S["温度采集<br/>sensor_read()"] ~~~ H["加热输出<br/>heater_set()"]
-  end
-  U -->|"命令"| P
-  U <-.->|"应答"| P
-  C <-->|"温度"| S
-  C -->|"占空比"| H
-  linkStyle 3,4 marker-end:none
-  classDef term fill:#e9edf2,stroke:#333,stroke-width:1.2px,color:#111
-  classDef proc fill:#ffffff,stroke:#333,stroke-width:1px,color:#111
-  classDef dec fill:#fffaf0,stroke:#333,stroke-width:1px,color:#111
-  classDef io fill:#eef4fb,stroke:#333,stroke-width:1px,color:#111
-  classDef sub fill:#f4f0fa,stroke:#333,stroke-width:1px,color:#111
-  classDef isr fill:#f4f0fa,stroke:#333,stroke-width:1.2px,color:#111
-  classDef join fill:#ffffff,stroke:#333,stroke-width:1px,color:#111,font-size:12px
-  class U,P,C,S,H proc
+  L1["<b>上位机通信层</b><br/><span style='display:inline-block;min-width:420px;font-size:13px'>串口命令收发 · 拆帧与校验和 · 应答发送</span>"]
+  L2["<b>应用层</b><br/><span style='display:inline-block;min-width:420px;font-size:13px'>命令解析与应答 · 设定温度管理 · PI 温度控制</span>"]
+  L3["<b>驱动层</b><br/><span style='display:inline-block;min-width:420px;font-size:13px'>ADC 温度采集与滤波 · 加热 PWM 输出</span>"]
+  L4["<b>设备层</b><br/><span style='display:inline-block;min-width:420px;font-size:13px'>NTC 温度传感器 · 加热器</span>"]
+  L1 -->|"读温度、设定温度<br/>命令 0x01 / 0x02"| L2
+  L1 <-.->|"应答帧"| L2
+  L2 -->|"PWM 占空比"| L3
+  L2 <-.->|"滤波温度<br/>故障标志"| L3
+  L3 <-->|"ADC 采样 / PWM 输出"| L4
+  L4 ~~~ LG["实线箭头：命令下行　　虚线箭头：状态上行　　双向箭头：硬件接口"]
+  linkStyle 1,3 marker-end:none
+  classDef b1 fill:#eaf2fb,stroke:#9fb6cf,stroke-width:1px,color:#111
+  classDef b2 fill:#edf6ea,stroke:#a8c3a0,stroke-width:1px,color:#111
+  classDef b3 fill:#fdf6e6,stroke:#d6c294,stroke-width:1px,color:#111
+  classDef b4 fill:#eef0f2,stroke:#a9b0b8,stroke-width:1px,color:#111
+  classDef lg fill:#ffffff,stroke:#9aa3ad,stroke-width:1px,stroke-dasharray:4 3,color:#333,font-size:12px
+  class L1 b1
+  class L2 b2
+  class L3 b3
+  class L4 b4
+  class LG lg

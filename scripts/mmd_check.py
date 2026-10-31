@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 """Mermaid 流程图检查与渲染。
-  python3 mmd_check.py lint   <目录>            # 孤立节点、判断框出口不足 2 条
-  python3 mmd_check.py render <目录> [图名...]   # 生成 .svg 与 3 倍 .png，并报告插入 A4 后的字号
+  python3 mmd_check.py lint   <目录>            # 孤立节点、判断框出口不足 2 条；复杂度与形状提示
+  python3 mmd_check.py render <目录> [图名...] [--scale 0.85] [--max-h 16.5] [--text-w 14.65]
+                                               # 生成 .svg 与 3 倍 .png，并报告插入 Word 后的尺寸和字号
 需要 mmdc（@mermaid-js/mermaid-cli）。只在 Claude 的云端工作区安装，不装进用户项目。
+复杂度提示（不算错误）：功能流程图超过 10 个节点或 3 个判断框、用了端点/矩形/菱形/六边形以外的形状、
+第一行缺少“%% 图 … 代码依据”注释。含 subgraph 的结构图和 00 总体结构图不按节点数提示。
 """
 import glob, json, os, re, subprocess, sys, tempfile
 
-TEXT_W_CM, MAX_H_CM = 14.65, 21.5      # 与 build_docx.py 一致：A4、左右边距 3.17 cm
+TEXT_W_CM, MAX_H_CM = 14.65, 16.5      # 与 build_docx.py 一致：A4、左右边距 3.17 cm；流程图限高 16.5 cm
+FIG_SCALE = 0.85                       # 与 build_docx.py 一致：按 mmdc 原生尺寸的 0.85 倍插入，不放大
+MAX_NODES, MAX_DECS = 10, 3            # 功能流程图只画主干：6~10 个节点、判断框不超过 3 个，细节写进正文
+SIMPLE_SHAPES = {'([', '[', '{', '{{'}  # 圆角端点、矩形、菱形、六边形
 KW = ('subgraph', 'class', 'classDef', 'style', 'linkStyle', 'flowchart', 'graph', 'direction', 'end', 'click')
 SHAPE_OPEN = r'(\(\[|\[\[|\[\(|\(\(|\{\{|\[/|\[\\|\[|\{|\(|>)'
 
@@ -21,13 +27,14 @@ def lint(d):
         body = strip_cfg(open(p, encoding='utf-8').read())
         lines = [l.strip() for l in body.splitlines() if l.strip() and not l.strip().startswith('%%')]
         subs = set(re.findall(r'^subgraph\s+([A-Za-z]\w*)', '\n'.join(lines), re.M))
-        nodes, decs, out, inc = set(), set(), {}, {}
+        nodes, decs, out, inc, shapes = set(), set(), {}, {}, {}
         for l in lines:
             if l.split()[0] in KW:
                 continue
             l = re.sub(r'"[^"]*"', '""', l)                                    # 忽略引号内的标签文字
             for m in re.finditer(r'(?:^|[\s&>|-])([A-Za-z]\w*)\s*' + SHAPE_OPEN, l):
                 nodes.add(m.group(1))
+                shapes.setdefault(m.group(2), set()).add(m.group(1))
                 if m.group(2) == '{':
                     decs.add(m.group(1))
             if not re.search(r'--|==|-\.|~~~', l):
@@ -47,11 +54,24 @@ def lint(d):
         orphans = sorted(k for k in nodes if k not in out and k not in inc and k not in subs)
         baddec = sorted(k for k in decs if out.get(k, 0) < 2)
         name = os.path.basename(p)
+        overview = bool(subs) or name.startswith('00')
+        tips = []
+        if not overview and (len(nodes) > MAX_NODES or len(decs) > MAX_DECS):
+            tips.append('%d 个节点、%d 个判断框，超过 %d/%d：只画主干，细节写进正文，或按执行单元拆图'
+                        % (len(nodes), len(decs), MAX_NODES, MAX_DECS))
+        extra = sorted(k for k in shapes if k not in SIMPLE_SHAPES)
+        if not overview and extra:
+            tips.append('用了 %s 形状（%s），建议只用圆角端点、矩形、菱形' % (' '.join(extra), ','.join(sorted(set().union(*(shapes[k] for k in extra))))))
+        first = next((l.strip() for l in body.splitlines() if l.strip().startswith('%%')), '')
+        if '图' not in first or '依据' not in first:
+            tips.append('第一行缺少“%% 图号 标题（主要代码依据：…）”注释')
         if orphans or baddec:
             ok = False
             print('%-40s 孤立节点=%s 判断框出口<2=%s' % (name, orphans, baddec))
         else:
-            print('%-40s ok  %d 个节点' % (name, len(nodes)))
+            print('%-40s ok  %d 个节点，%d 个判断框' % (name, len(nodes), len(decs)))
+        for t in tips:
+            print('   WARN ' + t)
     print('ALL OK' if ok else '有问题，请修改后重跑')
     return ok
 
@@ -67,7 +87,7 @@ def puppeteer_cfg():
     return p
 
 
-def render(d, names):
+def render(d, names, scale=FIG_SCALE, max_h=MAX_H_CM, text_w=TEXT_W_CM):
     pp = puppeteer_cfg()
     files = [os.path.join(d, n if n.endswith('.mmd') else n + '.mmd') for n in names] or sorted(glob.glob(os.path.join(d, '*.mmd')))
     for p in files:
@@ -85,10 +105,10 @@ def render(d, names):
         svg = open(base + '.svg', encoding='utf-8').read()
         w, h = [float(x) for x in re.search(r'viewBox="[\d.\-]+ [\d.\-]+ ([\d.]+) ([\d.]+)"', svg).groups()[:2]]
         wcm, hcm = w / 96 * 2.54, h / 96 * 2.54
-        sc = min(TEXT_W_CM / wcm, MAX_H_CM / hcm, 1.0)   # 与 build_docx 一致：按正文宽度插入、过高按高度，不放大
+        sc = min(scale, text_w / wcm, max_h / hcm)   # 与 build_docx 一致：原生尺寸 × 0.85，限宽限高，不放大
         pt = font_px * 0.75 * sc
         flag = '  <-- 字太小，考虑拆图或改 TB/LR' if pt < 6 else ('  <-- 偏小' if pt < 7 else '')
-        if hcm * sc >= MAX_H_CM - 0.05 and wcm * sc < TEXT_W_CM * 0.6:
+        if hcm * sc >= max_h - 0.05 and wcm * sc < text_w * 0.6:
             flag += '  <-- 又高又窄，考虑改为 LR 或拆图'
         print('%-40s %5.0fx%-5.0fpx  插入后 %4.1fx%4.1fcm  正文字号≈%.1fpt%s'
               % (os.path.basename(base), w, h, wcm * sc, hcm * sc, pt, flag))
@@ -99,6 +119,14 @@ if __name__ == '__main__':
     if cmd == 'lint':
         sys.exit(0 if lint(d) else 1)
     elif cmd == 'render':
-        render(d, rest)
+        opt = {'--scale': FIG_SCALE, '--max-h': MAX_H_CM, '--text-w': TEXT_W_CM}
+        names = []
+        it = iter(rest)
+        for x in it:
+            if x in opt:
+                opt[x] = float(next(it))
+            else:
+                names.append(x)
+        render(d, names, opt['--scale'], opt['--max-h'], opt['--text-w'])
     else:
         print(__doc__)

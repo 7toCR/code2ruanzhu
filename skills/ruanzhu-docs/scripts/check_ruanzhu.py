@@ -2,13 +2,17 @@
 """软著材料形式检查：设计说明书 / 源代码文档 / 信息采集卡 JSON。
 
 用法:
-  python3 check_ruanzhu.py design 说明书.docx --name 软件全称 --version V1.0 [--code-lines 12953] [--min-lines 30] [--json 报告.json]
-  python3 check_ruanzhu.py source 源代码.docx --name 软件全称 --version V1.0 [--lines-per-page 50] [--json 报告.json]
+  python3 check_ruanzhu.py design 说明书.docx --name 软件全称 --version V1.0 [--code-lines 12953] [--min-lines 30]
+                                [--like 参考说明书.docx] [--json 报告.json]
+  python3 check_ruanzhu.py source 源代码.docx --name 软件全称 --version V1.0 [--lines-per-page 50]
+                                [--like 参考源代码.docx] [--sibling 另一份软著的源代码.docx ...] [--json 报告.json]
   python3 check_ruanzhu.py card   采集卡.json [--design 说明书.docx] [--stats 源代码统计.json] [--json 报告.json]
 
 输出 ERROR / WARN / INFO 三级结果，退出码：有 ERROR 时为 1。
 检查项代码与含义见 references/compliance-review.md。页数、页码、目录、每页行数依赖 LibreOffice 渲染，
 与 Word 的分页可能差一两页，差 1 页只给 WARN。
+--like：与参考件逐类比较版式（标题、正文、项目符号、图片段、图题、目录、页面设置；源代码比较每页行数、字体字号、
+行距、页边距、行号），不一致给 R01 / S08。--sibling：源代码提交页与同一申请人另一份软著的重合度（S07）。
 """
 import argparse
 import datetime as dt
@@ -19,8 +23,10 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rz_common import (convert, default_header_parts, docx_xml, header_footer_text, norm, para_text,  # noqa: E402
-                       paragraphs, pdf_pages)
+from rz_common import (code_lines_from_docx, convert, default_header_parts, docx_xml, header_footer_text,  # noqa: E402
+                       norm, overlap, page_fill, para_text, paragraphs, pdf_pages)
+
+FIG_MAX_H_CM = 17.0      # 图片插入高度上限（build_docx 默认限高 16.5 cm，留一点余量）
 
 FORBIDDEN = re.compile(r'[（(【\[]\s*待(确认|补充|定|核实|完善)|待(确认|补充|核实)[：:]|TODO|TBD|FIXME|XXX|推测|猜测|\?\?\?')
 LINKS = re.compile(r'https?://|www\.|[\w.+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b|copyright|©|版权所有|all rights reserved', re.I)
@@ -82,6 +88,22 @@ def toc_entries(paras):
             title, page = para_text(x[:i]).strip(), para_text(x[i:]).strip()
             if title and re.fullmatch(r'\d+', page):
                 out.append((title, int(page)))
+    return out
+
+
+def style_ppr(docx, pxml, _cache={}):
+    """段落所用样式（含 basedOn 链）的 pPr 文本，用于判断样式里的段前分页。"""
+    if docx not in _cache:
+        _cache[docx] = docx_xml(docx, 'word/styles.xml')
+    sx, out, seen = _cache[docx], '', set()
+    sid = re.search(r'<w:pStyle w:val="([^"]+)"', pxml)
+    while sid and sid.group(1) not in seen:
+        seen.add(sid.group(1))
+        m = re.search(r'<w:style\b[^>]*w:styleId="%s"[^>]*>.*?</w:style>' % re.escape(sid.group(1)), sx, re.S)
+        if not m:
+            break
+        out += ''.join(re.findall(r'<w:pPr>.*?</w:pPr>', m.group(0), re.S))
+        sid = re.search(r'<w:basedOn w:val="([^"]+)"', m.group(0))
     return out
 
 
@@ -199,6 +221,23 @@ def design(a):
             R.add('ERROR', 'F03', '正文引用了不存在的图号：%s' % bad)
         if len(caps) < nimg:
             R.add('WARN', 'F04', '有 %d 张图没有图题（图题格式“图 3-1 标题”）' % (nimg - len(caps)))
+    m = re.findall(r'<w:pgSz w:w="(\d+)"[^>]*/>.*?<w:pgMar w:top="\d+" w:right="(\d+)" w:bottom="\d+" w:left="(\d+)"', doc, re.S)
+    text_w_cm = ((int(m[-1][0]) - int(m[-1][1]) - int(m[-1][2])) / 567) if m else 14.65
+    big = []
+    for k, (cx, cy) in enumerate(re.findall(r'<wp:extent cx="(\d+)" cy="(\d+)"/>', doc), 1):
+        wcm, hcm = int(cx) / 360000, int(cy) / 360000
+        if hcm > FIG_MAX_H_CM or wcm > text_w_cm + 0.1:
+            big.append('第 %d 张 %.1f×%.1f cm' % (k, wcm, hcm))
+    if big:
+        R.add('WARN', 'F05', '图片过大（宽超过版心 %.1f cm 或高超过 %.0f cm，会把前一页挤出大片空白）：%s。'
+              '流程图按原生尺寸的 0.85 倍插入，过高的图精简节点或拆图' % (text_w_cm, FIG_MAX_H_CM, '；'.join(big[:8])))
+    if getattr(a, 'like', None):
+        from like_ref import layout_diff
+        diffs = layout_diff(docx, a.like)
+        for kind, msg in diffs:
+            R.add('WARN', 'R01', '版式与参考件不一致——%s：%s' % (kind, msg))
+        if not diffs:
+            R.add('INFO', 'R01', '各类段落、目录和页面设置与参考件 %s 一致' % os.path.basename(a.like))
 
     if a.no_render:
         return R
@@ -217,17 +256,41 @@ def design(a):
     # 每页行数
     imgp = pdf_images_pages(pdf)
     toc_pages = {i for i, t in enumerate(pages) if '目录' in t[:400] or len(re.findall(r'\.{6,}', t)) >= 3}
-    thin = []
+    forced = set()                                   # 段前分页（或前面有分页符）的标题
+    for k, p in enumerate(paras):
+        if heading_level(p['style']) and p['text'].strip():
+            prev = paras[k - 1]['xml'] if k else ''
+            if p['pb'] or 'w:type="page"' in prev or '<w:pageBreakBefore/>' in style_ppr(docx, p['xml']):
+                forced.add(norm(p['text']))
+
+    def rows_of(t):
+        rows = [l for l in t.splitlines() if l.strip()]
+        return [l for l in rows if not (a.name and norm(a.name) in norm(l)) and not re.fullmatch(r'\s*(\d+|\d+\s*of\s*\d+|第\s*\d+\s*页.*)\s*', l)]
+    thin, chap_end, pushed = [], [], []
+    fill = page_fill(pdf)
     for i, t in enumerate(pages):
         if i == 0 or i == n - 1 or i in toc_pages or (i + 1) in imgp or '修订' in t[:300]:
             continue
-        rows = [l for l in t.splitlines() if l.strip()]
-        rows = [l for l in rows if not (a.name and norm(a.name) in norm(l)) and not re.fullmatch(r'\s*(\d+|\d+\s*of\s*\d+|第\s*\d+\s*页.*)\s*', l)]
-        if len(rows) < a.min_lines:
-            thin.append('%d(%d行)' % (i + 1, len(rows)))
+        rows = rows_of(t)
+        if len(rows) < a.min_lines and (i >= len(fill) or fill[i] < 0.85):   # 标题多、行距大的满页不算
+            nxt = rows_of(pages[i + 1])
+            head = norm(''.join(nxt[:3]))
+            tag = '%d(%d行)' % (i + 1, len(rows))
+            if any(f and f in head for f in forced):
+                chap_end.append(tag)
+            elif (i + 2) in imgp and nxt and CAPTION.match(nxt[0].strip()):
+                pushed.append(tag)
+            else:
+                thin.append(tag)
+    if pushed:
+        R.add('WARN', 'P02', '这些页的下一页以图开头，图放不下被推到下一页、留下空白：%s。可把图前的一两段移到图后，'
+              '或给该图设较小的 max_h_cm' % '、'.join(pushed))
     if thin:
         R.add('WARN', 'P02', '无图页面行数少于 %d 行：%s。常见原因是章节前强制分页，或下一张图放不下被推到下一页；可去掉分页、缩小图片或调整段落'
               % (a.min_lines, '、'.join(thin)))
+    if chap_end:
+        R.add('INFO', 'P02', '章节末页行数少于 %d 行（下一页是段前分页的标题；参考件同样分页时可以保留）：%s'
+              % (a.min_lines, '、'.join(chap_end)))
     # 页眉逐页
     if a.name:
         nohead = [i + 1 for i, t in enumerate(pages) if norm(a.name) not in norm('\n'.join(t.splitlines()[:4]))]
@@ -284,9 +347,38 @@ def source(a):
     com = sum(1 for l in code if re.match(r'\s*(//|/\*|\*|#(?!include|define|if|endif|else|elif|pragma|undef|ifdef|ifndef)|--|<!--)', l))
     ratio = (blank + com) / max(len(lines), 1)
     R.add('WARN' if ratio > 0.30 else 'INFO', 'S04', '注释+空行约占 %.0f%%（要求不超过 30%%）' % (ratio * 100))
+    for sib in getattr(a, 'sibling', None) or []:
+        other = code_lines_from_docx(sib)
+        nt, same, best = overlap(lines, other)
+        r = same / max(nt, 1)
+        lvl = 'WARN' if (r > 0.3 or best > 50) else 'INFO'
+        R.add(lvl, 'S07', '与 %s 相同的代码行占 %.0f%%（%d/%d），最长连续相同 %d 行%s'
+              % (os.path.basename(sib), r * 100, same, nt, best,
+                 '；同一申请人的两份软著提交页大段相同，容易被要求补正，公共代码放到中间（不提交）部分'
+                 if lvl == 'WARN' else ''))
+    if getattr(a, 'like', None):
+        from source_code_docx import like_info
+        from like_ref import page_setup
+        mi, ri = like_info(a.docx), like_info(a.like)
+        bad = []
+        if mi['lpp'] != ri['lpp']:
+            bad.append('每页行数 %d（参考 %d）' % (mi['lpp'], ri['lpp']))
+        strip = lambda x: re.sub(r'\s(?:w:rsid\w*)="[^"]*"|<w:pageBreakBefore/>', '', x)
+        if strip(mi['ppr']) != strip(ri['ppr']):
+            bad.append('段落格式（行距、缩进等）')
+        if strip(mi['rpr']) != strip(ri['rpr']):
+            bad.append('字体字号')
+        pt, pr = page_setup(a.docx), page_setup(a.like)
+        bad += ['%s 不同' % k for k in sorted(set(pt) | set(pr)) if pt.get(k) != pr.get(k)]
+        if mi['width'] > ri['width'] + 2:
+            bad.append('最长行宽 %d，超过参考件的 %d（Word 中会自动折行，页内行数随之变化）' % (mi['width'], ri['width']))
+        if bad:
+            R.add('WARN', 'S08', '版式与参考件不一致：%s' % '；'.join(bad))
+        else:
+            R.add('INFO', 'S08', '每页 %d 行，字体、行距、页面与行号设置与参考件一致' % mi['lpp'])
     if a.no_render:
         return R
-    pdf = a.pdf or convert(a.docx, 'pdf', a.outdir)
+    pdf = a.pdf or convert(a.docx, 'pdf', a.outdir, mono_preview=True)
     pages = pdf_pages(pdf)
     n = len(pages)
     if n > 60:
@@ -297,7 +389,8 @@ def source(a):
         R.add('INFO', 'S05', '共 60 页')
     short = []
     for i, t in enumerate(pages[:-1]):
-        rows = [l for l in t.splitlines() if l.strip() and not (a.name and norm(a.name) in norm(l))]
+        rows = [l for l in t.splitlines() if l.strip() and not (a.name and norm(a.name) in norm(l))
+                and not re.fullmatch(r'\s*\d+\s*', l)]          # 页码、单独成行的行号不算代码行
         if len(rows) < a.lines_per_page:
             short.append('%d(%d行)' % (i + 1, len(rows)))
     if short:
@@ -398,11 +491,13 @@ def main():
         p.add_argument('--outdir', help='PDF 输出目录')
         p.add_argument('--no-render', action='store_true', help='不转 PDF，只做文本检查')
         p.add_argument('--json')
+        p.add_argument('--like', help='参考件（已获批的同类材料），逐项比较版式')
         if c == 'design':
             p.add_argument('--code-lines', type=int)
             p.add_argument('--min-lines', type=int, default=30)
         else:
             p.add_argument('--lines-per-page', type=int, default=50)
+            p.add_argument('--sibling', nargs='*', default=[], help='同一申请人另一份软著的源代码文档')
     p = sub.add_parser('card')
     p.add_argument('json_in')
     p.add_argument('--design')

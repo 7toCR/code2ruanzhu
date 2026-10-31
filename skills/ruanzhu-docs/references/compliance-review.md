@@ -6,13 +6,13 @@
 
 - 列出交付文件夹里的全部文件，找出说明书、源代码文档、采集卡、截图、流程图源文件和用户的规则文件（如 RULE.md）。先读规则文件。
 - 同一材料有多个版本时（如 说明书、说明书1、说明书2），按修改时间和内容确定最新版，以它为准审查，并提醒用户定稿后只留一份；模板副本、核查报告等非申请材料不要放在交付文件夹。
-- 参考件（代理给的已获批样例）用来对照版式，不是审查对象。
+- 参考件（代理给的已获批样例）用来对照版式，不是审查对象；检查时用 `--like` 逐项比较。同一申请人的其他软著（尤其是同一代码库）找出来，源代码检查时作为 `--sibling`。
 
 ## 2. 自动检查
 
 ```bash
-python3 <skill>/scripts/check_ruanzhu.py design 说明书.docx --name <全称> --version V1.0 --code-lines <源程序量>
-python3 <skill>/scripts/check_ruanzhu.py source 源代码.docx --name <全称> --version V1.0
+python3 <skill>/scripts/check_ruanzhu.py design 说明书.docx --name <全称> --version V1.0 --code-lines <源程序量> [--like 参考.docx]
+python3 <skill>/scripts/check_ruanzhu.py source 源代码.docx --name <全称> --version V1.0 [--like 参考_源代码.docx] [--sibling 另一份_源代码.docx]
 python3 <skill>/scripts/check_ruanzhu.py card 采集卡.json --design 说明书.docx
 ```
 
@@ -39,8 +39,10 @@ python3 <skill>/scripts/check_ruanzhu.py card 采集卡.json --design 说明书.
 | F02 | ERROR | 图号重复 |
 | F03 | ERROR | 正文引用了不存在的图号 |
 | F04 | WARN | 有图没有图题（编号版式） |
+| F05 | WARN | 图片插入过大：宽超过版心或高超过 17 cm（流程图应精简或限高） |
+| R01 | WARN/INFO | 与参考件逐类比较版式（`--like`）：各级标题、正文、项目符号、图片段、图题、目录条目、页面设置、一级标题段前分页、有无图题；一致时为 INFO |
 | P01 | ERROR | 页数低于源程序量对应的最少页数 |
-| P02 | WARN | 无图页面少于 30 行（多由章节前强制分页或大图推到下一页造成） |
+| P02 | WARN/INFO | 无图页面少于 30 行：下一页以图开头（图被推到下一页）、其他原因为 WARN；下一页是段前分页的标题（章节末页）为 INFO |
 | P03 | INFO | 超过 60 页，提交前后各 30 页 |
 | T01 | WARN/INFO | 目录页码与正文不符（差 2 页以上为 WARN，差 1 页为 INFO，可能是渲染差异） |
 | T02 | WARN | 没有目录 |
@@ -50,6 +52,8 @@ python3 <skill>/scripts/check_ruanzhu.py card 采集卡.json --design 说明书.
 | S04 | WARN/INFO | 注释+空行占比（超过 30% 为 WARN） |
 | S05 | ERROR/INFO | 源代码页数（超过 60 页为 ERROR） |
 | S06 | ERROR | 源代码每页不足 50 行 |
+| S07 | WARN/INFO | 与同一申请人另一份软著的源代码重合（`--sibling`）：相同行超过 30% 或最长连续相同超过 50 行为 WARN |
+| S08 | WARN/INFO | 与参考源代码文档的版式不一致（`--like`）：每页行数、段落与文字格式、页面与行号设置、最长行宽 |
 | K01–K14 | — | 采集卡：缺字段、待填项、名称、版本号、主要功能字数、字段长度、日期顺序、成立半年、源程序量、平台混用、信用代码格式、与说明书页眉一致、与统计一致 |
 
 页数、页码、目录、每页行数依赖 LibreOffice 渲染，与 Word 可能差一两页；结论要说明这一点，必要时请用户在 Word 中核对。

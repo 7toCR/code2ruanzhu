@@ -4,21 +4,22 @@
 
 ## 1. 规划图表
 
-- `00_软件总体结构`：分层画出模块关系（例如 上位机通信层 → 应用协议层 → 任务处理层 → 总线通信层 → 设备层），区分命令下行、状态上行、控制信号和物理链路。
+- `00_软件总体结构`：分层色带图（见第 4 节末的写法），每层一个横条，写层名和该层的三四个组成部分（例如 上位机层 → 通信链路层 → 处理层 → 驱动与总线层 → 设备层）；层间连线区分命令下行、状态上行和总线收发，图下附图例。
 - `01_软件运行流程`：上电或启动 → 初始化 → 调度器或主循环 → 若干并行支路（例如命令下行、状态上行、巡检、异常处理）。
-- 从 `02` 起，**每个功能章节至少一张图**，包括温度/姿态采集、固件升级、电源管理这类容易被省略的模块。图太宽或太高时，按执行单元（任务、中断、接口函数）拆成 `NNa`、`NNb`，不要硬塞进一张图。
+- 从 `02` 起，**每个功能章节至少一张图**，包括温度/姿态采集、固件升级、电源管理这类容易被省略的模块。
+- **每张功能流程图只画主干：6~10 个节点，判断框不超过 3 个。** 已获批的样例都是这种简图；把十几个节点、所有异常分支都画进去的图，插进 A4 后字小、占满整页，反而被要求“简化”。重试次数、超时值、字段含义等细节写进正文；一个模块确实有两个执行单元（任务、中断、接口函数）时拆成 `NNa`、`NNb`。
 - 固件升级类模块通常要两张：主控升级（进入升级 → 写入 → 校验 → 提交 → 确认/回滚）和外设升级（如 CAN IAP：进入 Boot → 分段下发 → 校验 → 写入 → 进度上报 → 中止）。
 - 不需要图的章节：软件概述、系统运行要求、引言、运行与部署、接口与数据结构（用表格）。
 
 ## 2. 每个 .mmd 的开头配置
 
-总体框图这类大图可以把 nodeSpacing 和 rankSpacing 调成 14 和 34。子图标题被节点压住时，加 `subGraphTitleMargin`。
+功能流程图用下面的间距；00 总体结构图改为 `nodeSpacing: 60`、`rankSpacing: 30`、`padding: 12`，并加 `wrappingWidth: 640`，让色带里的长文字不折行。子图标题被节点压住时，加 `subGraphTitleMargin`。
 
 ```
 ---
 config:
   theme: base
-  fontFamily: "Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif"
+  fontFamily: "Noto Sans CJK SC, Microsoft YaHei, PingFang SC, sans-serif"
   themeVariables:
     fontSize: 14px
     primaryColor: "#ffffff"
@@ -30,9 +31,9 @@ config:
   flowchart:
     useMaxWidth: false
     curve: basis
-    nodeSpacing: 26
-    rankSpacing: 22
-    padding: 8
+    nodeSpacing: 30
+    rankSpacing: 36
+    padding: 12
 ---
 %% 图 NN 标题（主要代码依据：xxx.c 的 func()）
 flowchart TB
@@ -40,26 +41,22 @@ flowchart TB
 
 ## 3. 符号约定
 
+默认只用三种形状（已获批样例的画法）：
+
 | 形状 | 写法 | 用途 | class |
 |---|---|---|---|
 | 圆角端点 | `A(["开始"])` | 开始、结束、任务入口 | term |
 | 矩形 | `B["处理"]` | 处理步骤 | proc |
 | 菱形 | `C{"条件？"}` | 判断，每个出口都标“是/否”或具体条件 | dec |
-| 平行四边形 | `D[/"收到数据"/]` | 数据输入或输出 | io |
-| 双竖线矩形 | `E[["func()<br/>说明（见图 NN）"]]` | 子过程，另有图 | sub |
-| 浅紫圆角端点 | `I(["XX中断回调"])` | 中断上下文入口 | isr |
-| 圆形 | `J(("继续"))` | 循环汇合点 | join |
+
+运行流程图里“多任务并发运行”这类分叉点可用六边形 `F{{"多任务按优先级并发运行"}}`（class dec）。参考件或用户另有约定时，才用平行四边形（输入输出）、双竖线矩形（子过程）、圆形汇合点等形状；`mmd_check.py lint` 会提示多出的形状。
 
 classDef 写在每张图末尾：
 
 ```
-  classDef term fill:#e9edf2,stroke:#333,stroke-width:1.2px,color:#111
+  classDef term fill:#e8ecf0,stroke:#333,stroke-width:1.2px,color:#111
   classDef proc fill:#ffffff,stroke:#333,stroke-width:1px,color:#111
-  classDef dec fill:#fffaf0,stroke:#333,stroke-width:1px,color:#111
-  classDef io fill:#eef4fb,stroke:#333,stroke-width:1px,color:#111
-  classDef sub fill:#f4f0fa,stroke:#333,stroke-width:1px,color:#111
-  classDef isr fill:#f4f0fa,stroke:#333,stroke-width:1.2px,color:#111
-  classDef join fill:#ffffff,stroke:#333,stroke-width:1px,color:#111,font-size:12px
+  classDef dec fill:#fcf8ec,stroke:#333,stroke-width:1px,color:#111
 ```
 
 ## 4. 写法要点（都是实际踩过的坑）
@@ -69,6 +66,7 @@ classDef 写在每张图末尾：
 - `fontFamily` 必须放在 config 顶层，放进 themeVariables 不生效；必须设 `useMaxWidth: false`，否则图会被压到 800 px 宽。
 - 用默认的 dagre 布局，不用 ELK：中文长节点在 ELK 下会排乱。
 - 总体框图里的上行连线写成「接收方 `<-.->` 发送方」，再用 `linkStyle <序号> marker-end:none` 隐藏终点箭头。这样分层仍保持自上而下，箭头也指向接收方。连线序号按定义顺序从 0 数起（含子图内的连线和 `~~~`），增删连线后要重新核对。
+- 分层色带图：每层一个节点，文字写成 `"<b>层名</b><br/><span style='display:inline-block;min-width:480px;font-size:13px'>组成1 · 组成2 · 组成3</span>"`，`min-width` 让各层等宽；相邻两层之间画一条实线（下行）和一条 `<-.->` 虚线（上行），最底两层用 `<-->` 表示总线收发；最后一层后接 `~~~ LG["实线箭头：命令下行　虚线箭头：状态上行　双向箭头：总线收发"]` 作图例。每层一个 classDef 浅色底（如 #eaf2fb、#edf6ea、#fdf6e6、#f1eef8、#eef0f2），图例用白底虚线框。示例见 `assets/example/flowcharts/00_软件总体结构.mmd`。
 - 用 `A ~~~ B` 不可见连线对齐并排的几列。互不相连的几列表示相互独立的执行单元，要在 README 里说明。
 - 循环要回到前面的步骤时，经汇合点 `(( ))` 回连，避免长回边横穿整张图。
 - 第一行 `%%` 注释写图号、标题和主要代码依据。待确认或未编译的分支，在节点文字里注明“（待确认）”或“（未编译）”；这种图进入说明书前要先确认或删掉该分支。
@@ -82,7 +80,8 @@ python3 <skill>/scripts/mmd_check.py render <flowcharts目录>   # 生成 .svg �
 ```
 
 - 需要 mmdc（`npm i -g @mermaid-js/mermaid-cli`），只装在 Claude 的云端工作区，不装进用户项目。
-- 插入后的字号目标不低于 7 pt；00、01 这类全景图不低于 5.5 pt 也可接受。小图不会被放大（与 build_docx 一致，按原始尺寸插入）。字号不够时，改变方向（LR 与 TB 互换）、拆图或精简文字；报告“又高又窄”时考虑改为 LR。
+- `lint` 另外提示（WARN，不算错误）：功能流程图超过 10 个节点或 3 个判断框、用了三种基本形状以外的形状、第一行缺少“%% 图号 标题（主要代码依据：…）”。
+- `render` 按 build_docx 的插入方式计算尺寸：原生尺寸 × 0.85，宽不超过版心 14.65 cm，高不超过 16.5 cm（`--scale`、`--max-h`、`--text-w` 可改，与 content.py 的设置保持一致）。插入后的字号目标约 9 pt，不低于 7 pt。字号不够或图过高时，先精简节点，再考虑改变方向（LR 与 TB 互换）或拆图；报告“又高又窄”时考虑改为 LR。
 - 用 Read 逐张查看 PNG。箭头交叉、标签压线、子图标题被遮挡、判断分支含糊、节点重叠都要改到干净为止。拆图后要重新运行 lint，防止连线丢失。
 
 ## 6. flowcharts/README.md
@@ -96,3 +95,13 @@ python3 <skill>/scripts/mmd_check.py render <flowcharts目录>   # 生成 .svg �
 5. 与既有描述不一致或未能确认的事项：逐条编号，写明代码里怎么写、图里怎么画。
 6. 绘图约定。
 7. 渲染与编辑方法：mmdc 命令；可以在 mermaid.live、Typora、VS Code 中打开编辑；插入 Word 时用 PNG。
+
+## 7. 精简已有流程图（restyle）
+
+用户说“图片简化一下（参考某份软著）”时：
+
+1. 先看参考件的图：节点数、形状、配色、总体结构图的画法，以参考件为准；参考件没有特别之处时按本文件第 3、4 节。
+2. 原图目录复制为 `流程图_原版备份`。保留原图号、文件名和第一行的代码依据注释，正文的图号引用就不用改。
+3. 每张图只留主干：合并顺序执行的小步骤，删掉重试、日志、细小的异常分支，节点 6~10 个、判断框不超过 3 个；去掉的细节确认正文里已经写到，没写到的不在图里补回。
+4. `mmd_check.py lint`（没有 WARN）和 `render`，逐张看 PNG；再按 document-generation.md 第 5 节重排说明书。
+5. 在 flowcharts/README.md 的绘图约定里记一句：何时、参照哪份材料精简，原图在哪里。

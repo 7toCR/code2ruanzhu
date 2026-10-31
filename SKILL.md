@@ -1,6 +1,6 @@
 ---
 name: ruanzhu-docs
-description: 软著（计算机软件著作权登记）材料全流程：读源代码画 Mermaid 流程图并生成详细设计说明书 .docx；围绕用户提供的截图写软件说明书；生成前后各 30 页、每页 50 行的源代码文档并统计源程序量；起草并填写信息采集卡；审查已有材料是否合规（页眉页码、目录、每个模块的流程图、页数与代码量、说明书—代码—申请表三重匹配）并列出缺失材料。用户提到软著、软件著作权、设计说明书、软件说明书、用户手册、源代码文档、鉴别材料、信息采集卡、软著申请表，或问软著材料是否合规、还缺什么时使用。
+description: 软著（计算机软件著作权登记）材料全流程：读源代码画 Mermaid 流程图并生成详细设计说明书 .docx；围绕用户提供的截图写软件说明书；生成前后各 30 页的源代码文档并统计源程序量；起草并填写信息采集卡；照已获批的参考软著重排已有材料（段落、目录、图样、源代码每页行数与之一致，精简流程图）；同一代码库申请多份软著时避开重复代码；审查已有材料是否合规（页眉页码、目录、每个模块的流程图、页数与代码量、说明书—代码—申请表三重匹配）并列出缺失材料。用户提到软著、软件著作权、设计说明书、软件说明书、用户手册、源代码文档、鉴别材料、信息采集卡、软著申请表，要求参考另一份软著改格式或简化图片，或问软著材料是否合规、还缺什么时使用。
 ---
 
 # 软著材料：源代码 → 说明书、源代码文档、信息采集卡
@@ -27,6 +27,7 @@ description: 软著（计算机软件著作权登记）材料全流程：读源�
 | 写设计说明书 | design | 流程图目录 + 设计说明书 |
 | 写软件说明书 / 用户手册（附截图） | manual | 软件说明书 |
 | 生成源代码文档 / 统计代码行数 | source | 源代码文档 + 统计 |
+| 参考另一份软著改格式 / 图片简化一下 / 重新选代码 | restyle | 正文不动、版式与参考件一致的说明书；精简后的流程图；按参考件重排的源代码文档 |
 | 填采集卡 / 申请表 | card | 采集卡（Word + Markdown） |
 | 看看是否合规 / 还缺什么材料 | review | 按严重程度排序的问题清单 + 缺失材料 |
 
@@ -35,6 +36,7 @@ description: 软著（计算机软件著作权登记）材料全流程：读源�
 ### 1. 接收
 
 - 确认输入：源代码路径和要登记的分支或提交、参考软著（版式样本）、目标模板、截图、软件全称和版本号、采集卡模板、交付位置、用户自己的规则文件。能从文件中读到的不要问（全称和版本号通常在模板封面或页眉里）。只有不知道写哪个软件、或代码基线有多个候选且差异大时才停下来问。
+- 有已获批的参考软著时，说明书、源代码文档和检查都加 `--like` 照它排，图样也照它精简；不要套用本技能的默认版式。同一申请人用同一代码库已申请过另一份软著时，把那份的源代码文档作为 `--sibling`，提交页避开与它相同的代码。
 - 读 `references/registration-rules.md`，每次都读：规则会影响你对用户说什么。其中第 4 节要求**开始前**用一两句话告知用户 AI 承诺问题，由用户决定是否继续。
 - review 模式直接转到 `references/compliance-review.md`。
 
@@ -44,17 +46,17 @@ description: 软著（计算机软件著作权登记）材料全流程：读源�
 
 ### 3. 流程图
 
-按 `references/flowcharts.md` 规划图表（每个功能章节至少一张），写 .mmd，运行 `mmd_check.py lint` 和 `render`，逐张看 PNG 改到干净，写 flowcharts/README.md。
+按 `references/flowcharts.md` 规划图表（每个功能章节至少一张），写 .mmd，运行 `mmd_check.py lint` 和 `render`，逐张看 PNG 改到干净，写 flowcharts/README.md。功能流程图只画主干：6~10 个节点、判断框不超过 3 个，细节写进正文。
 
 ### 4. 设计说明书
 
 按 `references/design-doc-writing.md` 选版式、定章节、写正文；按 `references/document-generation.md` 写 content.py，运行：
 
 ```bash
-python3 <skill>/scripts/build_docx.py --content content.py --out out/<全称>_详细设计说明书.docx --auto-toc [--template 模板.docx]
+python3 <skill>/scripts/build_docx.py --content content.py --out out/<全称>_详细设计说明书.docx --auto-toc [--template 模板.docx] [--like 参考软著.docx]
 ```
 
-`<skill>` 为本技能目录。完整示例见 `assets/example/`（虚构软件，可直接运行）。
+`<skill>` 为本技能目录。完整示例见 `assets/example/`（虚构软件，可直接运行）。重排已有说明书（restyle）时先用 `docx_to_content.py` 拆出 content.py，见 document-generation.md 第 5 节。
 
 ### 5. 源代码文档
 
@@ -62,8 +64,11 @@ python3 <skill>/scripts/build_docx.py --content content.py --out out/<全称>_�
 
 ```bash
 python3 <skill>/scripts/source_code_docx.py stats <自研代码目录...> --json out/源代码统计.json
-python3 <skill>/scripts/source_code_docx.py build <自研代码目录...> --name <全称> --version V1.0 -o out/<全称>_源代码.docx --pdf
+python3 <skill>/scripts/source_code_docx.py build <自研代码目录...> --name <全称> --version V1.0 -o out/<全称>_源代码.docx --pdf \
+    [--files-from 顺序.txt] [--like 参考源代码.docx] [--sibling 另一份软著_源代码.docx] [--dry-run]
 ```
+
+收录文件或顺序变了，源程序量随之变化，采集卡要同步（info-card.md 第 4 节）。
 
 ### 6. 信息采集卡
 
@@ -76,8 +81,8 @@ python3 <skill>/scripts/fill_info_card.py <采集卡模板> 采集卡.json -o ou
 ### 7. 检查
 
 ```bash
-python3 <skill>/scripts/check_ruanzhu.py design out/<全称>_详细设计说明书.docx --name <全称> --version V1.0 --code-lines <源程序量>
-python3 <skill>/scripts/check_ruanzhu.py source out/<全称>_源代码.docx --name <全称> --version V1.0
+python3 <skill>/scripts/check_ruanzhu.py design out/<全称>_详细设计说明书.docx --name <全称> --version V1.0 --code-lines <源程序量> [--like 参考软著.docx]
+python3 <skill>/scripts/check_ruanzhu.py source out/<全称>_源代码.docx --name <全称> --version V1.0 [--like 参考源代码.docx] [--sibling 另一份软著_源代码.docx]
 python3 <skill>/scripts/check_ruanzhu.py card 采集卡.json --design out/<全称>_详细设计说明书.docx --stats out/源代码统计.json
 ```
 
@@ -87,7 +92,7 @@ python3 <skill>/scripts/check_ruanzhu.py card 采集卡.json --design out/<全�
 
 ### 8. 交付
 
-- 流程图目录（.mmd、.svg、.png、README.md）写到 `<仓库>/docs/softcopyright/flowcharts/`（新建目录）或用户指定位置；文档写到交付位置，覆盖前先备份（见 document-generation.md 第 4 节）。
+- 流程图目录（.mmd、.svg、.png、README.md）写到 `<仓库>/docs/softcopyright/flowcharts/`（新建目录）或用户指定位置；文档写到交付位置，覆盖前先备份为 `<原名>_原版备份`（见 document-generation.md 第 4 节）。
 - 最后的回复要简短：产出了什么、用了哪个模板和代码基线；待确认事项；需要申请人提供或处理的事项（【待填】字段、截图、营业执照、签章与手抄承诺、合同）；AI 承诺提醒；在 Word 中更新目录。不粘贴大段内容。
 
 ## 硬性规则
@@ -107,6 +112,9 @@ python3 <skill>/scripts/check_ruanzhu.py card 采集卡.json --design out/<全�
 |---|---|
 | 帮我把这个工程写成软著材料 | full 模式，步骤 1–8 |
 | 只要设计说明书 | design 模式，步骤 1–4、7、8 |
+| 参考那份软著改格式 / 图片简化一下 | restyle：document-generation.md 第 5 节、flowcharts.md 第 7 节；正文不动 |
+| 按参考件调源代码文档的每页行数、行号 | source-code-doc.md 第 3 节（`--like`） |
+| 同一代码库再申请一份软著 / 两份代码不要重复 | source-code-doc.md 第 4 节（`--sibling`），先问用户是否避开重复代码 |
 | 根据截图写软件说明书 | design-doc-writing.md 第 6 节；没有截图时列出需要的截图 |
 | 生成源代码文档 / 源程序量是多少 | source-code-doc.md |
 | 帮我填采集卡 | info-card.md；先读说明书和代码，申请人信息标【待填】 |

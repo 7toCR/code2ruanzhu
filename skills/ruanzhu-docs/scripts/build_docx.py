@@ -2,7 +2,7 @@
 """按模板版式生成软著说明书 .docx（详细设计说明书 / 软件说明书通用）。
 
 用法:
-  python3 build_docx.py --content content.py --out 输出.docx [--template 模板.docx] [--auto-toc]
+  python3 build_docx.py --content content.py --out 输出.docx [--template 模板.docx] [--like 参考软著.docx] [--auto-toc]
 
 模板: 用户给的目标文档（已有封面/页眉）优先；其次用参考软著本身；都没有时用本技能自带的
       assets/template_design.docx（编号版式，页眉含“【软件全称】 【版本号】”占位和右侧页码）。
@@ -12,14 +12,18 @@ content.py 可定义:
   TITLE   = ['软件全称', 'V1.0', '详细设计说明书']      # 封面标题行，替换模板前 N 个封面段
   NUMBERED = False     # False：参考软著版式（“一：软件概述”居中标题、图下不加图题）
                        # True ：编号版式（1 / 3.1 / 4.1.1 章节编号，图下加“图 3-1 标题”，目录三级）
-  FIG     = {'00': ('flowcharts/00_总体结构.png', '软件总体结构图'),     # 流程图：缩到 2/3 并量化 256 色
+  FIG     = {'00': ('flowcharts/00_总体结构.png', '软件总体结构图', {'max_h_cm': 14}),  # 第三项可选：单图尺寸
              's1': ('shots/登录.png', '登录界面', 'shot')}              # 截图：不量化，过宽才缩
+  FIG_SCALE = 0.85      # 流程图按 mmdc 原生尺寸的 0.85 倍插入（14px 字约 9pt），不随版心放大
+  FIG_MAX_W_CM = None   # 默认为版心宽度；FIG_MAX_H_CM 默认 16.5，均可在单图选项里覆盖
+  LIKE = '参考软著.docx'  # 可选，同 --like：照参考件的段落版式排正文、目录、项目符号、图与图题
   BLOCKS  = [('h1', '软件概述'),                       # 编号版式的章；参考版式用 ('h2c', '一：软件概述')
              ('h2', '软件总体结构'), ('h3', '下行帧拆分与校验'),
              ('p', '……详情如{图:00}所示。'),             # {图:key} 编号版式替换为“图3-1”，参考版式替换为“下图”
              ('p', '……', 'keep'),                     # 'keep'：与下一段同页
              ('req', '硬件环境：……'),                  # 系统运行要求条目
              ('fields', '具体字段解释如下：', [('名称：', '说明。')]),
+             ('li', '单个项目符号段'),
              ('table', [['功能码', '名称', '说明'], ['0x01', '查询版本', '……']], {'widths': [2, 3, 9.6]}),
              ('fig', '00'), ('pb',)]
   STYLE   = {...}        # 可选：覆盖自动识别的样式 ID，或 font='宋体'、sz=24（半磅）
@@ -28,6 +32,10 @@ content.py 可定义:
   TOC_COVER = None       # 封面行是否进目录；默认参考版式进、编号版式不进
 页眉中的“【软件全称】”“【版本号】”占位会自动替换为 TITLE[0]、TITLE[1]。
 --auto-toc: 用 LibreOffice 渲染 PDF 回填目录页码，重复到页码稳定（最多 4 轮）。
+--like:     照参考软著同款排版（见 like_ref.py）。模板最好就是参考件本身或由它派生的目标模板；
+            否则会把参考件的样式和编号定义补进模板，主题字体不同时给出提示。
+            like 模式下：'req' 和 'li' 用参考件的项目符号版式；一级标题是否分页跟参考件；
+            参考件没有表格时对 'table' 块给出提示（建议改写成 fields）；未写 NUMBERED 时按参考件有无图题决定。
 """
 import argparse
 import importlib.util
@@ -46,7 +54,8 @@ from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_TEMPLATE = os.path.join(os.path.dirname(HERE), 'assets', 'template_design.docx')
 EMU_PER_TWIP = 635
-MAX_SCALE = 1.0                  # 小流程图不放大（14px 字插入后约 10.5pt），避免字号过大
+FIG_SCALE = 0.85                 # 流程图按原生尺寸的 0.85 倍插入（14px 字约 9pt），与已获批样例的图面一致
+FIG_MAX_H_CM = 16.5              # 流程图限高；过高的图会把前一页挤出大片空白
 FIG_PH = re.compile(r'\{图:([^}]+)\}')
 
 
@@ -57,7 +66,7 @@ def load_content(path):
     return m
 
 
-def detect_styles(word):
+def detect_styles(word, quiet=()):
     s = open(os.path.join(word, 'styles.xml'), encoding='utf-8').read()
     names, numbered = {}, {}
     for m in re.finditer(r'<w:style\b[^>]*w:styleId="([^"]+)"[^>]*>(.*?)</w:style>', s, re.S):
@@ -69,11 +78,29 @@ def detect_styles(word):
               h3=names.get('heading 3', 'Heading3'), toc=names.get('toc heading', 'TOCHeading'),
               toc1=names.get('toc 1', 'TOC1'), toc2=names.get('toc 2', 'TOC2'), toc3=names.get('toc 3', 'TOC3'),
               link=names.get('hyperlink', 'Hyperlink'))
-    missing = [k for k, v in st.items() if v not in names.values()]
+    missing = [k for k, v in st.items() if v not in names.values() and k not in quiet]
     if missing:
         print('WARN 模板缺少样式', missing, '（Word 打开后仍可显示，但标题/目录外观可能不同）')
     st['auto_num'] = {k: numbered.get(st[k], False) for k in ('h1', 'h2', 'h3')}
     return st
+
+
+def ensure_numbering_part(word, unpacked):
+    """模板没有 numbering.xml 时新建一个空的，并登记关系和内容类型。"""
+    p = os.path.join(word, 'numbering.xml')
+    if os.path.exists(p):
+        return
+    open(p, 'w', encoding='utf-8').write(
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:numbering>')
+    rp = os.path.join(word, '_rels/document.xml.rels')
+    r = open(rp, encoding='utf-8').read().replace('</Relationships>',
+        '<Relationship Id="rIdNumX" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>')
+    open(rp, 'w', encoding='utf-8').write(r)
+    cp = os.path.join(unpacked, '[Content_Types].xml')
+    c = open(cp, encoding='utf-8').read().replace('</Types>',
+        '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>')
+    open(cp, 'w', encoding='utf-8').write(c)
 
 
 def ensure_bullet(word, unpacked):
@@ -88,16 +115,8 @@ def ensure_bullet(word, unpacked):
                 if n:
                     return n.group(1)
     else:
-        s = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-             '<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:numbering>')
-        rp = os.path.join(word, '_rels/document.xml.rels')
-        r = open(rp, encoding='utf-8').read().replace('</Relationships>',
-            '<Relationship Id="rIdNumX" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>')
-        open(rp, 'w', encoding='utf-8').write(r)
-        cp = os.path.join(unpacked, '[Content_Types].xml')
-        c = open(cp, encoding='utf-8').read().replace('</Types>',
-            '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>')
-        open(cp, 'w', encoding='utf-8').write(c)
+        ensure_numbering_part(word, unpacked)
+        s = open(p, encoding='utf-8').read()
     aid, nid = '9001', '9001'
     absn = ('<w:abstractNum w:abstractNumId="%s"><w:multiLevelType w:val="hybridMultilevel"/>'
             '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="\uf06c"/><w:lvlJc w:val="left"/>'
@@ -175,10 +194,13 @@ class Builder:
                 '<w:ind w:firstLine="0"/><w:jc w:val="center"/></w:pPr>' + self.run(s, bold=True, sz=21) + '</w:p>')
 
     def p_fig(self, rid, cx, cy, alt, keep=False):
+        return ('<w:p><w:pPr>%s<w:spacing w:before="120" w:after="0" w:line="240" w:lineRule="auto"/><w:ind w:firstLine="0"/><w:jc w:val="center"/></w:pPr>'
+                % ('<w:keepNext/>' if keep else '') + self.drawing(rid, cx, cy, alt) + '</w:p>')
+
+    def drawing(self, rid, cx, cy, alt):
         self.pic += 1
         n = self.pic
-        return ('<w:p><w:pPr>%s<w:spacing w:before="120" w:after="0" w:line="240" w:lineRule="auto"/><w:ind w:firstLine="0"/><w:jc w:val="center"/></w:pPr>'
-                '<w:r><w:rPr><w:noProof/></w:rPr><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">'
+        return ('<w:r><w:rPr><w:noProof/></w:rPr><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">'
                 '<wp:extent cx="%d" cy="%d"/><wp:effectExtent l="0" t="0" r="0" b="0"/>'
                 '<wp:docPr id="%d" name="图片 %d" descr="%s"/>'
                 '<wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr>'
@@ -188,8 +210,8 @@ class Builder:
                 '<pic:nvPicPr><pic:cNvPr id="%d" name="图片 %d" descr="%s"/><pic:cNvPicPr/></pic:nvPicPr>'
                 '<pic:blipFill><a:blip r:embed="%s"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
                 '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="%d" cy="%d"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>'
-                '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>'
-                ) % ('<w:keepNext/>' if keep else '', cx, cy, n, n, escape(alt), n, n, escape(alt), rid, cx, cy)
+                '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'
+                ) % (cx, cy, n, n, escape(alt), n, n, escape(alt), rid, cx, cy)
 
     def table(self, rows, opts):
         opts = opts or {}
@@ -373,12 +395,20 @@ def subst(s, labels, numbered):
     return FIG_PH.sub(rep, s)
 
 
-def build(template, content_path, out, pages):
+def build(template, content_path, out, pages, like=None):
     C = load_content(content_path)
-    numbered = bool(getattr(C, 'NUMBERED', False))
+    base = os.path.dirname(os.path.abspath(content_path))
+    like = like or getattr(C, 'LIKE', None)
+    P = None
+    if like:
+        sys.path.insert(0, HERE)
+        from like_ref import Profile
+        like = like if os.path.isabs(like) else (like if os.path.exists(like) else os.path.join(base, like))
+        P = Profile(like)
+        print(P.summary())
+    numbered = bool(getattr(C, 'NUMBERED', P.has_captions if P else False))
     toc_cover = getattr(C, 'TOC_COVER', None)
     toc_cover = (not numbered) if toc_cover is None else bool(toc_cover)
-    base = os.path.dirname(os.path.abspath(content_path))
     work = tempfile.mkdtemp(prefix='rz_build_')
     with zipfile.ZipFile(template) as z:
         z.extractall(work)
@@ -387,9 +417,19 @@ def build(template, content_path, out, pages):
             if os.path.islink(os.path.join(root, f)):
                 os.remove(os.path.join(root, f))
     word = os.path.join(work, 'word')
-    st = detect_styles(word)
+    st = detect_styles(word, quiet=('toc', 'toc1', 'toc2', 'toc3', 'link') if (P and P.toc) else ())
     st['bullet'] = ensure_bullet(word, work)
     st.update(getattr(C, 'STYLE', {}) or {})
+    if P and os.path.abspath(like) != os.path.abspath(template):
+        added = P.import_into(word, work)
+        if added or P.idmap or P.nummap:
+            print('从参考件补入样式 %s，样式改名 %s，编号定义 %s' % (added, P.idmap, P.nummap))
+        tm = re.search(r'<a:minorFont>.*?<a:font script="Hans" typeface="([^"]*)"',
+                       open(os.path.join(word, 'theme', 'theme1.xml'), encoding='utf-8').read(), re.S) \
+            if os.path.exists(os.path.join(word, 'theme', 'theme1.xml')) else None
+        if tm and P.east_asian_font() and tm.group(1) != P.east_asian_font():
+            print('WARN 模板主题中文字体为 %s，参考件为 %s；正文若用主题字体，显示会不同。最好直接用参考件或由它派生的模板'
+                  % (tm.group(1), P.east_asian_font()))
     reps = list(getattr(C, 'HEADER_REPLACE', []) or [])
     reps += [('【软件全称】', C.TITLE[0])] + ([('【版本号】', C.TITLE[1])] if len(C.TITLE) > 1 else [])
     for old, new in reps:
@@ -486,10 +526,11 @@ def build(template, content_path, out, pages):
         if 'Target="%s"' % tg not in other and 'Target="%s"' % tg not in rels and os.path.exists(os.path.join(word, tg)):
             os.remove(os.path.join(word, tg))
     os.makedirs(os.path.join(word, 'media'), exist_ok=True)
-    max_w = text_w * EMU_PER_TWIP
-    max_h = int(min(21.5 * 360000, (text_h - 1700) * EMU_PER_TWIP))
-    if numbered:
-        max_h = int(min(20.5 * 360000, (text_h - 2300) * EMU_PER_TWIP))   # 给图题留位置
+    scale = float(getattr(C, 'FIG_SCALE', FIG_SCALE))
+    page_w = text_w * EMU_PER_TWIP
+    dflt_w = getattr(C, 'FIG_MAX_W_CM', None)
+    dflt_h = float(getattr(C, 'FIG_MAX_H_CM', FIG_MAX_H_CM))
+    cap_h = int((text_h - (2300 if numbered else 1700)) * EMU_PER_TWIP)      # 给图题留位置
     fig_rel, new_rels = {}, []
     used = [b[1] for b in C.BLOCKS if b[0] == 'fig']
     for k, (key, spec) in enumerate(C.FIG.items()):
@@ -497,7 +538,10 @@ def build(template, content_path, out, pages):
             print('WARN FIG 中的 %r 没有在 BLOCKS 中使用' % key)
             continue
         path, alt = spec[0], spec[1]
-        shot = len(spec) > 2 and spec[2] == 'shot'
+        shot = 'shot' in spec[2:]
+        fopt = next((x for x in spec[2:] if isinstance(x, dict)), {})
+        max_w = min(page_w, int(float(fopt.get('max_w_cm', dflt_w or 99)) * 360000))
+        max_h = min(cap_h, int(float(fopt.get('max_h_cm', dflt_h)) * 360000))
         src = path if os.path.isabs(path) else os.path.join(base, path)
         im = Image.open(src)
         w, h = im.size
@@ -512,7 +556,7 @@ def build(template, content_path, out, pages):
         im.save(os.path.join(word, 'media', dst), optimize=True)
         rid = 'rIdRz%02d' % (k + 1)
         new_rels.append('<Relationship Id="%s" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/%s"/>' % (rid, dst))
-        cx = max_w                      # 流程图按正文宽度插入，但不超过原始尺寸（PNG 按 3 倍图计）
+        cx = max_w                      # 流程图按原生尺寸 × FIG_SCALE 插入，限宽限高（PNG 按 3 倍图计）
         if not shot:
             svg = os.path.splitext(src)[0] + '.svg'
             nat_w = w / 3
@@ -520,7 +564,7 @@ def build(template, content_path, out, pages):
                 mv = re.search(r'viewBox="[\d.\-]+ [\d.\-]+ ([\d.]+) ([\d.]+)"', open(svg, encoding='utf-8').read())
                 if mv:
                     nat_w = float(mv.group(1))
-            cx = min(max_w, int(nat_w / 96 * 914400 * MAX_SCALE))
+            cx = min(max_w, int(nat_w / 96 * 914400 * float(fopt.get('scale', scale))))
         if shot:                        # 截图：不超过原始尺寸，但不小于正文宽度的 60%
             cx = max(min(max_w, int(w / 96 * 914400)), int(max_w * 0.6))
         cy = int(cx * h / w)
@@ -537,8 +581,55 @@ def build(template, content_path, out, pages):
 
     labels = number_figures(C, numbered)
     body, num = [], [0, 0, 0]
-    for b in C.BLOCKS:
+    warned_table = False
+    long_ascii = lambda t: bool(re.search(r'[A-Za-z0-9_().]{12,}', t))
+    blocks = list(C.BLOCKS)
+    for bi_, b in enumerate(blocks):
         kind = b[0]
+        if P:
+            nxt = blocks[bi_ + 1][0] if bi_ + 1 < len(blocks) else None
+            if kind == 'pb' and nxt == 'h1' and P.h1_break:
+                continue                            # 参考件的一级标题自带段前分页，不再重复分页
+            if kind in ('h1', 'h2', 'h3', 'h2c'):
+                lvl = 2 if kind == 'h2c' else int(kind[1])
+                tkind = 'h%d' % lvl if P.has('h%d' % lvl) else None
+                if tkind:
+                    num[lvl - 1] += 1
+                    for j in range(lvl, 3):
+                        num[j] = 0
+                    no = '.'.join(str(x) for x in num[:lvl])
+                    auto = P.auto_numbered(tkind)
+                    title = b[1]
+                    shown = title if (auto or kind == 'h2c' or not numbered) else '%s %s' % (no, title)
+                    i, name = B.new_bm()
+                    body.append(P.para(tkind, shown, bm=(i, name), center=(kind == 'h2c')))
+                    toc_entries.append((lvl, ('%s %s' % (no, title)) if (numbered and kind != 'h2c') else title, name))
+                    continue
+            elif kind in ('p', 'fields') and P.has('body'):
+                t0 = subst(b[1], labels, numbered)
+                body.append(P.para('body', t0, keep=(kind == 'fields' or (len(b) > 2 and b[2] == 'keep')),
+                                   long_ascii=long_ascii(t0)))
+                if kind == 'fields':
+                    for lab, s_ in b[2]:
+                        t1 = subst(lab, labels, numbered) + subst(s_, labels, numbered)
+                        body.append(P.para('bullet', t1) if P.has('bullet') else B.p_bullet('', t1))
+                continue
+            elif kind in ('req', 'li') and (P.has('bullet') or P.has('body')):
+                t0 = subst(b[1], labels, numbered)
+                body.append(P.para('bullet' if P.has('bullet') else 'body', t0))
+                continue
+            elif kind == 'fig' and P.has('fig'):
+                if b[1] not in fig_rel:
+                    raise ValueError('FIG 中没有 %r' % b[1])
+                rid, cx, cy, alt = fig_rel[b[1]]
+                body.append(P.fig_para(B.drawing(rid, cx, cy, alt)))
+                if numbered:
+                    cap = '图 %s %s' % (labels[b[1]], alt)
+                    body.append(P.para('cap', cap) if P.has('cap') else B.p_caption(cap))
+                continue
+            elif kind == 'table' and not P.has_tables and not warned_table:
+                print('WARN 参考件正文没有表格；如要与参考件一致，把表格改写成 fields 块（“具体字段解释如下：”加项目符号）')
+                warned_table = True
         if kind in ('h1', 'h2', 'h3', 'h2c'):
             lvl = 2 if kind == 'h2c' else int(kind[1])
             title = b[1]
@@ -562,6 +653,8 @@ def build(template, content_path, out, pages):
         elif kind == 'fields':
             body.append(B.p_body(subst(b[1], labels, numbered), keep=True))
             body += [B.p_bullet(subst(lab, labels, numbered), subst(s, labels, numbered)) for lab, s in b[2]]
+        elif kind == 'li':
+            body.append(B.p_bullet('', subst(b[1], labels, numbered)))
         elif kind == 'table':
             rows = [[subst(str(c), labels, numbered) for c in r] for r in b[1]]
             body.append(B.table(rows, b[2] if len(b) > 2 else {}))
@@ -575,7 +668,8 @@ def build(template, content_path, out, pages):
             body.append(B.p_pagebreak())
         else:
             raise ValueError('未知块类型 %r' % (kind,))
-    xml = head + cover_xml + B.toc(toc_entries, pages, toc_break) + ''.join(body) + sect + '</w:body></w:document>'
+    toc_xml = P.toc_xml(toc_entries, pages) if (P and P.toc) else B.toc(toc_entries, pages, toc_break)
+    xml = head + cover_xml + toc_xml + ''.join(body) + sect + '</w:body></w:document>'
     open(os.path.join(word, 'document.xml'), 'w', encoding='utf-8').write(xml)
     if os.path.exists(out):
         os.remove(out)
@@ -592,10 +686,11 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--pages', default=None, help='已有页码 JSON（不用 --auto-toc 时）')
     ap.add_argument('--auto-toc', action='store_true')
+    ap.add_argument('--like', default=None, help='参考软著 .docx：照它的段落版式排正文、目录、项目符号、图与图题')
     a = ap.parse_args()
     template = a.template or DEFAULT_TEMPLATE
     pages = json.load(open(a.pages)) if a.pages and os.path.exists(a.pages) else {}
-    entries = build(template, a.content, a.out, pages)
+    entries = build(template, a.content, a.out, pages, a.like)
     if a.auto_toc:
         sys.path.insert(0, HERE)
         from rz_common import convert
@@ -610,7 +705,7 @@ def main():
             if new == pages:
                 break
             pages = new
-            entries = build(template, a.content, a.out, pages)
+            entries = build(template, a.content, a.out, pages, a.like)
         json.dump(pages, open(os.path.join(pdfdir, 'pages.json'), 'w'), ensure_ascii=False)
         print('目录页码稳定' if new == pages else 'WARN 4 轮后页码仍在变化', '共', n, '页；PDF:', pdf)
     print('built', a.out, os.path.getsize(a.out), 'bytes')

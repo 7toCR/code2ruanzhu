@@ -6,6 +6,8 @@
   python3 source_code_docx.py build <目录或文件>... --name 软件全称 --version V1.0 -o 源代码.docx
         [--files-from 顺序.txt] [--first 文件] [--last 文件] [--lines-per-page 50]
         [--keep-blank] [--scrub] [--line-numbers page|continuous|none] [--font 宋体] [--size 10] [--pdf]
+        [--like 参考源代码.docx] [--strip-comments] [--collapse-ws] [--wrap-width 72] [--wrap-style smart|hard]
+        [--sibling 另一份软著的源代码.docx ...] [--dry-run]
 
 选文件规则（两个子命令一致）:
   - 只收常见源代码扩展名；跳过 Drivers、Middlewares、CMSIS、node_modules、vendor、build、dist、test、docs 等目录（--exclude 可追加）。
@@ -18,6 +20,19 @@
   - --scrub 只删除“整行是注释且含网址、邮箱或版权字样”的行，删除内容写入报告；不改动任何代码行。
   - 同时写出 <输出名>_报告.json：文件顺序、首行末行、被排除的第三方文件、可疑行、注释与空行占比。
   - --pdf 会用 LibreOffice 转出 PDF，并逐页核对行数。
+照参考件（--like）:
+  - 复制参考源代码文档的整套版式：字体字号、固定行距、页边距、页眉页脚（软件名换成 --name）、行号设置，
+    每页行数取参考件的实际行数（如 58 行），折行宽度取参考件最长行的显示宽度（如 72）。
+  - 参考件不含注释、行内没有对齐空格时，自动打开 --strip-comments 和 --collapse-ws（--keep-comments、
+    --no-collapse-ws 可关闭）。
+处理选项:
+  - --strip-comments：去掉注释（C 风格跳过字符串；Python/Shell 只去整行注释），注释行和空行一起不再出现。
+  - --collapse-ws：保留行首缩进，把行内连续空格压成一个（字符串内不动），宏定义和结构体不再因对齐空格折行。
+  - --wrap-style smart（默认）：长行优先在空格、逗号、左括号处断开，续行多缩进 4 格；hard 为按宽度硬折。
+重合检查（--sibling）:
+  - 同一申请人用同一代码库申请多份软著时，提交的 60 页不宜与另一份大段相同。给出提交页与对方文档的相同行占比、
+    最长连续相同行数、第 1 页相同占比，以及每个文件的重合度，重合高的公共文件建议放到中间（不提交）部分。
+--dry-run：只打印收录文件、前 30 页与后 30 页各含哪些文件、重合度，不生成文档。
 """
 import argparse
 import fnmatch
@@ -30,16 +45,25 @@ import zipfile
 from xml.sax.saxutils import escape
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rz_common import convert, disp_width, pdf_pages  # noqa: E402
+from collections import Counter  # noqa: E402
+from rz_common import (code_lines_from_docx, collapse_ws, convert, disp_width, docx_xml, overlap,  # noqa: E402
+                       para_text, pdf_pages, smart_wrap, strip_comments)
 
 CODE_EXT = {
     '.c': 'c', '.h': 'c', '.cpp': 'c', '.cc': 'c', '.cxx': 'c', '.hpp': 'c', '.hh': 'c', '.ino': 'c',
     '.cs': 'c', '.java': 'c', '.kt': 'c', '.scala': 'c', '.go': 'c', '.rs': 'c', '.swift': 'c', '.m': 'c', '.mm': 'c',
     '.js': 'c', '.jsx': 'c', '.ts': 'c', '.tsx': 'c', '.mjs': 'c', '.dart': 'c', '.php': 'c', '.css': 'c', '.scss': 'c',
     '.less': 'c', '.vue': 'html', '.html': 'html', '.htm': 'html', '.xml': 'html', '.wxml': 'html',
-    '.py': 'hash', '.sh': 'hash', '.rb': 'hash', '.pl': 'hash', '.r': 'hash', '.ps1': 'hash',
+    '.py': 'hash', '.pyw': 'hash', '.sh': 'hash', '.bash': 'hash', '.rb': 'hash', '.pl': 'hash', '.r': 'hash', '.ps1': 'hash',
     '.sql': 'dash', '.lua': 'dash', '.s': 'asm', '.asm': 'asm',
 }
+
+
+def lang_of(p):
+    """按扩展名判断注释风格；--files-from 里列出的其他扩展名按 C 风格处理。"""
+    return CODE_EXT.get(os.path.splitext(p)[1].lower(), 'c')
+
+
 EXCLUDE_DIRS = {
     '.git', '.svn', '.hg', '.idea', '.vscode', '.vs', '__pycache__', 'node_modules', 'bower_components', 'vendor',
     'third_party', 'thirdparty', '3rdparty', 'third-party', 'external', 'extern', 'deps', 'drivers', 'middlewares',
@@ -141,7 +165,7 @@ def collect(roots, extra_excludes, owners, allow):
 
 def file_stats(p):
     text, enc = read_text(p)
-    lang = CODE_EXT[os.path.splitext(p)[1].lower()]
+    lang = lang_of(p)
     total = blank = comment = 0
     blk = False
     for line in text.splitlines():
@@ -198,15 +222,20 @@ def wrap(line, width):
     return out
 
 
-def prepare_lines(files, keep_blank, scrub, width):
+def prepare_lines(files, keep_blank, scrub, width, strip=False, collapse=False, wrap_style='smart'):
     lines, flagged, removed, src_map = [], [], [], []
     for p in files:
         text, _ = read_text(p)
-        lang = CODE_EXT[os.path.splitext(p)[1].lower()]
+        lang = lang_of(p)
+        if strip:
+            text = strip_comments(text.replace('\r\n', '\n'), lang)
+        quotes = '"\'' if lang == 'hash' else '"\'`'
         blk = False
         start = len(lines)
         for i, raw in enumerate(text.splitlines(), 1):
             line = raw.expandtabs(4).rstrip().replace('\x0c', '')
+            if collapse:
+                line = collapse_ws(line, quotes)
             if not line.strip():
                 if keep_blank:
                     lines.append('')
@@ -219,7 +248,7 @@ def prepare_lines(files, keep_blank, scrub, width):
                     continue
                 flagged.append('%s:%d: %s' % (p, i, line.strip()[:120]))
             blk = blk2
-            lines.extend(wrap(line, width))
+            lines.extend(smart_wrap(line, width) if wrap_style == 'smart' else wrap(line, width))
         src_map.append((p, start + 1, len(lines)))
     return lines, flagged, removed, src_map
 
@@ -308,13 +337,92 @@ def build_docx(out, lines, name, version, font, ascii_font, size_pt, line_tw, lp
         z.writestr('docProps/app.xml', app)
 
 
+def like_info(ref):
+    """读参考源代码文档：每页行数、段落模板、最长行宽度、是否含注释与对齐空格、页眉中的软件名与版本号。"""
+    doc = docx_xml(ref)
+    body = doc[doc.index('<w:body>') + 8:doc.rindex('<w:sectPr')]
+    paras = re.findall(r'<w:p\b[^>]*>.*?</w:p>|<w:p\b[^>]*/>', body, re.S)
+    counts, c = [], 0
+    for p in paras:
+        if '<w:pageBreakBefore/>' in p and c:
+            counts.append(c); c = 0
+        c += 1
+    counts.append(c)
+    lpp = Counter(counts[:-1] or counts).most_common(1)[0][0]
+    texts = [para_text(p) for p in paras]
+    tpl = next((p for p in paras if '<w:pageBreakBefore/>' not in p and para_text(p).strip()), paras[0])
+    ppr = re.search(r'<w:pPr>.*?</w:pPr>', tpl, re.S)
+    run = re.search(r'<w:r\b[^>]*>.*?</w:r>', tpl, re.S)
+    rpr = re.search(r'<w:rPr>.*?</w:rPr>', run.group(0), re.S) if run else None
+    code = [t for t in texts if t.strip()]
+    com = sum(1 for t in code if re.match(r'\s*(//|/\*|\*(?!\w)|#(?!\s*(include|define|if|endif|else|elif|pragma|undef|ifdef|ifndef)\b)|--|<!--)', t))
+    multi = sum(1 for t in code if re.search(r'\S {2,}\S', t.strip()))
+    head = ''
+    hdr_parts = [n for n in zipfile.ZipFile(ref).namelist() if re.match(r'word/header\d*\.xml$', n)]
+    for n in hdr_parts:
+        x = docx_xml(ref, n)
+        x = re.sub(r'<w:txbxContent>.*?</w:txbxContent>', '', x, flags=re.S)
+        x = re.sub(r'<w:fldChar w:fldCharType="separate"/>.*?<w:fldChar w:fldCharType="end"/>', '', x, flags=re.S)
+        t = para_text(x).strip()
+        if len(t) > len(head):
+            head = t
+    m = re.match(r'^(.*?)\s*(V?\s*\d+(?:\.\d+)+)\s*$', head)
+    return dict(lpp=lpp, ppr=ppr.group(0) if ppr else '<w:pPr></w:pPr>', rpr=rpr.group(0) if rpr else '',
+                width=max((disp_width(t) for t in texts), default=72), comment_ratio=com / max(len(code), 1),
+                multi_space=multi / max(len(code), 1), header=head,
+                old_name=(m.group(1).strip() if m else head.strip()), old_version=(m.group(2).replace(' ', '') if m else ''))
+
+
+def build_like(out, lines, ref, info, lpp, name, version, old_name=None):
+    """复制参考件的整个包，只换正文和页眉中的软件名。"""
+    import shutil
+    import tempfile
+    from like_ref import ppr_set
+    work = tempfile.mkdtemp(prefix='rz_src_')
+    with zipfile.ZipFile(ref) as z:
+        z.extractall(work)
+    w = os.path.join(work, 'word')
+    doc = open(os.path.join(w, 'document.xml'), encoding='utf-8').read()
+    b0 = doc.index('<w:body>') + len('<w:body>')
+    sect = re.findall(r'<w:sectPr\b.*?</w:sectPr>', doc, re.S)[-1]
+    ppr = re.sub(r'<w:pageBreakBefore/>', '', info['ppr'])
+    ppr_pb = ppr_set(ppr, 'pageBreakBefore', '<w:pageBreakBefore/>')
+    body = ''.join('<w:p>%s<w:r>%s<w:t xml:space="preserve">%s</w:t></w:r></w:p>'
+                   % (ppr_pb if (i and i % lpp == 0) else ppr, info['rpr'], escape(t)) for i, t in enumerate(lines))
+    open(os.path.join(w, 'document.xml'), 'w', encoding='utf-8').write(doc[:b0] + body + sect + '</w:body></w:document>')
+    old = old_name or info['old_name']
+    hits = 0
+    if old and old != name:
+        for fn in os.listdir(w):
+            if re.match(r'(header|footer)\d*\.xml$', fn):
+                fp = os.path.join(w, fn)
+                x = open(fp, encoding='utf-8').read()
+                if escape(old) in x:
+                    hits += x.count(escape(old))
+                    open(fp, 'w', encoding='utf-8').write(x.replace(escape(old), escape(name)))
+        if not hits:
+            print('WARN 参考件页眉里找不到“%s”，请用 --like-name 指定参考件页眉中的软件名，或在 Word 中手动改页眉' % old)
+    if info['old_version'] and info['old_version'].lstrip('Vv') != version.lstrip('Vv'):
+        print('WARN 参考件页眉版本号为 %s，与 --version %s 不同，请在 Word 中核对页眉' % (info['old_version'], version))
+    if os.path.exists(out):
+        os.remove(out)
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+        for root, _, fs in os.walk(work):
+            for f in fs:
+                full = os.path.join(root, f)
+                z.write(full, os.path.relpath(full, work))
+    shutil.rmtree(work)
+    return hits
+
+
 def verify_pdf(docx, lpp, name):
-    pdf = convert(docx, 'pdf')
+    pdf = convert(docx, 'pdf', mono_preview=True)
     pages = pdf_pages(pdf)
     counts = []
     for t in pages:
         rows = [l for l in t.splitlines() if l.strip()]
-        rows = [l for l in rows if name not in l]          # 去掉页眉行
+        rows = [l for l in rows if name not in l and not re.fullmatch(r'\s*\d+\s*', l)]   # 去掉页眉行和页眉页脚上的孤立行号
         counts.append(len(rows))
     return pdf, counts
 
@@ -339,6 +447,16 @@ def main():
     ap.add_argument('--ascii-font', default='Courier New', help='英文与数字字体，默认等宽的 Courier New，保证折行计算准确')
     ap.add_argument('--size', type=float, default=10.0, help='字号（磅），默认 10')
     ap.add_argument('--pdf', action='store_true')
+    ap.add_argument('--like', help='参考源代码文档：照它的版式、每页行数、折行宽度和代码处理方式生成')
+    ap.add_argument('--like-name', help='参考件页眉中的软件名（自动识别失败时指定）')
+    ap.add_argument('--strip-comments', action='store_true')
+    ap.add_argument('--keep-comments', action='store_true', help='--like 时不自动去注释')
+    ap.add_argument('--collapse-ws', action='store_true')
+    ap.add_argument('--no-collapse-ws', action='store_true', help='--like 时不自动压缩行内空格')
+    ap.add_argument('--wrap-width', type=int, help='折行宽度（半角字符数）；默认按版心计算，--like 时取参考件最长行')
+    ap.add_argument('--wrap-style', choices=['smart', 'hard'], default='smart')
+    ap.add_argument('--sibling', nargs='*', default=[], help='同一申请人另一份软著的源代码文档，检查提交页的重合度')
+    ap.add_argument('--dry-run', action='store_true', help='只打印收录计划和重合度，不生成文档')
     a = ap.parse_args()
 
     if a.files_from:
@@ -378,25 +496,87 @@ def main():
     mono = a.ascii_font.lower() in ('courier new', 'courier', 'consolas', 'menlo', 'monaco', 'liberation mono', 'dejavu sans mono')
     width = int(text_w_pt / (a.size * (0.6 if mono else 0.62))) - 2   # 等宽字体每字符 0.6em；非等宽按 0.62em 保守估计
     text_h = page_h - mar['top'] - mar['bottom']
-    line_tw = min(300, text_h // (a.lines_per_page + 1))
-    lines, flagged, removed, src_map = prepare_lines(files, a.keep_blank, a.scrub, width)
     lpp = a.lines_per_page
+    strip, collapse = a.strip_comments, a.collapse_ws
+    info = None
+    if a.like:
+        info = like_info(a.like)
+        lpp = info['lpp'] if a.lines_per_page == 50 else a.lines_per_page
+        width = info['width'] if info['width'] >= 50 else width
+        if info['comment_ratio'] < 0.01 and not a.keep_comments:
+            strip = True
+        if info['multi_space'] < 0.01 and not a.no_collapse_ws:
+            collapse = True
+        print('参考件：每页 %d 行，最长行宽 %d，注释行占 %.1f%%，含对齐空格的行占 %.1f%%，页眉“%s”'
+              % (info['lpp'], info['width'], info['comment_ratio'] * 100, info['multi_space'] * 100, info['header']))
+        print('按参考件处理：每页 %d 行，折行宽度 %d，%s，%s' % (lpp, width, '去注释' if strip else '保留注释',
+                                                     '压缩行内空格' if collapse else '保留行内空格'))
+    if a.wrap_width:
+        width = a.wrap_width
+    line_tw = min(300, text_h // (lpp + 1))
+    lines, flagged, removed, src_map = prepare_lines(files, a.keep_blank, a.scrub, width, strip, collapse, a.wrap_style)
     pages_all = math.ceil(len(lines) / lpp)
+    n = 30 * lpp
     if pages_all > 60:
-        sel = lines[:30 * lpp] + lines[-30 * lpp:]
+        sel = lines[:n] + lines[-n:]
         mode = '前30页 + 后30页（全部 %d 页）' % pages_all
+        head_rng, tail_rng = (1, n), (len(lines) - n + 1, len(lines))
     else:
         sel = lines
         mode = '全部 %d 页（不足 60 页，整体提交）' % pages_all
-    build_docx(a.out, sel, a.name, a.version, a.font, a.ascii_font, a.size, line_tw, lpp, a.line_numbers, page_w, page_h, mar)
+        head_rng, tail_rng = (1, len(lines)), None
+    plan = {'head': [], 'tail': []}
+    for p, s0, e0 in src_map:
+        for key, rng in (('head', head_rng), ('tail', tail_rng)):
+            if rng and e0 >= rng[0] and s0 <= rng[1] and e0 >= s0:
+                plan[key].append(dict(path=p, from_line=max(s0, rng[0]), to_line=min(e0, rng[1]),
+                                      whole=(s0 >= rng[0] and e0 <= rng[1])))
+    print('总行数（处理后）%d，%s，每页 %d 行' % (len(lines), mode, lpp))
+    for key, title in (('head', '前 30 页' if tail_rng else '全部页'), ('tail', '后 30 页')):
+        if plan[key]:
+            print(title + '：')
+            for it in plan[key]:
+                print('   %s  行 %d–%d%s' % (it['path'], it['from_line'], it['to_line'], '' if it['whole'] else '（部分）'))
+    if tail_rng and plan['tail'] and not plan['tail'][0]['whole']:
+        print('   注：第 31 页从 %s 的中间开始（这是“后 30 页”的正常情况；想从文件开头开始，可调整文件顺序或增删中间的文件）'
+              % plan['tail'][0]['path'])
+    sib_report = []
+    for sib in a.sibling:
+        other = code_lines_from_docx(sib)
+        nt, same, best = overlap(sel, other)
+        nt1, same1, _ = overlap(sel[:lpp], other)
+        per = []
+        for p, s0, e0 in src_map:
+            fnt, fsame, _ = overlap(lines[s0 - 1:e0], other)
+            if fnt:
+                per.append((p, fsame / fnt, fnt))
+        shown = {it['path'] for k in ('head', 'tail') for it in plan[k]}
+        hot = [(p, r) for p, r, _ in per if r >= 0.8 and p in shown]
+        ratio = same / max(nt, 1)
+        lvl = 'WARN' if (ratio > 0.3 or best > 50 or same1 / max(nt1, 1) > 0.5 or hot) else 'INFO'
+        print('%s 与 %s 的重合：提交页相同行 %.1f%%（%d/%d），最长连续相同 %d 行，第 1 页相同 %.0f%%'
+              % (lvl, os.path.basename(sib), ratio * 100, same, nt, best, same1 / max(nt1, 1) * 100))
+        for p, r in hot:
+            print('   提交页中的 %s 与对方 %.0f%% 相同，建议移到中间（不提交）部分，提交页留给本软件特有的代码' % (p, r * 100))
+        sib_report.append(dict(sibling=sib, displayed_same_ratio=round(ratio, 3), displayed_lines=nt, longest_run=best,
+                               first_page_same_ratio=round(same1 / max(nt1, 1), 3),
+                               per_file=[dict(path=p, same_ratio=round(r, 3), lines=k) for p, r, k in per]))
+    print('源程序量（采集卡）：%d 行（%d 个文件的原始行数，含注释和空行）。收录文件变了，采集卡、填写内容和统计 JSON 都要同步'
+          % (tot['lines'], tot['files']))
+    if a.dry_run:
+        return
+    if info:
+        build_like(a.out, sel, a.like, info, lpp, a.name, a.version, a.like_name)
+    else:
+        build_docx(a.out, sel, a.name, a.version, a.font, a.ascii_font, a.size, line_tw, lpp, a.line_numbers, page_w, page_h, mar)
     first = next((l for l in sel if l.strip()), '')
     last = next((l for l in reversed(sel) if l.strip()), '')
     print('生成 %s：%s，每页 %d 行，折行宽度 %d 列' % (a.out, mode, lpp, width))
     print('首行：%s\n末行：%s' % (first.strip()[:80], last.strip()[:80]))
-    lang0 = CODE_EXT[os.path.splitext(files[0])[1].lower()]
+    lang0 = lang_of(files[0])
     if lang0 in FIRST_OK and not FIRST_OK[lang0].search(first):
         print('WARN 首行不是常见的文件开头（#include / import 等），考虑用 --first 指定入口文件')
-    if CODE_EXT[os.path.splitext(files[-1])[1].lower()] == 'c' and not last.strip().endswith('}'):
+    if lang_of(files[-1]) == 'c' and not last.strip().endswith('}'):
         print('WARN 末行不以 } 结尾，考虑用 --last 指定以完整函数结尾的文件')
     if flagged:
         print('WARN 收录代码中有 %d 行含网址/邮箱/版权/公司名字样（见报告）；整行注释可用 --scrub 删除，代码行请人工处理' % len(flagged))
@@ -406,8 +586,10 @@ def main():
         print('WARN 注释+空行占比超过 30%%（%.1f%%）' % (tot['blank_comment_ratio'] * 100))
     report.update(order=files, line_map=[dict(path=p, first_line=s, last_line=e) for p, s, e in src_map],
                   submitted=dict(mode=mode, pages=math.ceil(len(sel) / lpp), lines_per_page=lpp,
-                                 first_line=first, last_line=last),
-                  flagged_lines=flagged, scrubbed_lines=removed)
+                                 first_line=first, last_line=last, wrap_width=width, strip_comments=strip,
+                                 collapse_ws=collapse, like=a.like and os.path.basename(a.like),
+                                 head_files=plan['head'], tail_files=plan['tail']),
+                  sibling_overlap=sib_report, flagged_lines=flagged, scrubbed_lines=removed)
     if a.pdf:
         pdf, counts = verify_pdf(a.out, lpp, a.name)
         short = [i + 1 for i, c in enumerate(counts[:-1]) if c < lpp]
